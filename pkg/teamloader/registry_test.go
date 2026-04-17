@@ -128,7 +128,7 @@ func TestResolveToolsetWorkingDir(t *testing.T) {
 			name:              "tilde expands to home dir",
 			toolsetWorkingDir: "~/projects/app",
 			agentWorkingDir:   "/workspace",
-			want:              filepath.Join(home, "projects/app"),
+			want:              filepath.Join(home, "projects", "app"),
 		},
 		{
 			name:              "bare tilde expands to home dir",
