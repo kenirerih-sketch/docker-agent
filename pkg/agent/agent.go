@@ -260,10 +260,23 @@ func (a *Agent) ToolSets() []tools.ToolSet {
 func (a *Agent) ensureToolSetsAreStarted(ctx context.Context) {
 	for _, toolSet := range a.toolsets {
 		if err := toolSet.Start(ctx); err != nil {
-			desc := tools.DescribeToolSet(toolSet)
-			slog.Warn("Toolset start failed; skipping", "agent", a.Name(), "toolset", desc, "error", err)
-			a.addToolWarning(fmt.Sprintf("%s start failed: %v", desc, err))
+			// Only warn on the first failure in a streak; suppress duplicate
+			// warnings for subsequent retries that also fail.
+			if toolSet.ShouldReportFailure() {
+				desc := tools.DescribeToolSet(toolSet)
+				slog.Warn("Toolset start failed; will retry on next turn", "agent", a.Name(), "toolset", desc, "error", err)
+				a.addToolWarning(fmt.Sprintf("%s start failed: %v", desc, err))
+			} else {
+				desc := tools.DescribeToolSet(toolSet)
+				slog.Debug("Toolset still unavailable; retrying next turn", "agent", a.Name(), "toolset", desc, "error", err)
+			}
 			continue
+		}
+		// Emit a one-time notice when a previously-failed toolset recovers.
+		if toolSet.ConsumeRecovery() {
+			desc := tools.DescribeToolSet(toolSet)
+			slog.Info("Toolset now available", "agent", a.Name(), "toolset", desc)
+			a.addToolWarning(desc + " is now available")
 		}
 	}
 }

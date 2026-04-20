@@ -51,6 +51,7 @@ type Toolset struct {
 	mu           sync.Mutex
 	started      bool
 	stopping     bool // true when Stop() has been called
+	watcherAlive bool // true while the watchConnection goroutine is running
 
 	// Cached tools and prompts, invalidated via MCP notifications.
 	// cacheGen is bumped on each invalidation so that a concurrent
@@ -178,12 +179,16 @@ func (ts *Toolset) Start(ctx context.Context) error {
 
 	ts.started = true
 
-	// Spawn the connection watcher only on the initial Start.
-	// Restarts from within watchConnection call doStart directly
-	// and must NOT spawn an additional watcher goroutine.
-	// Use WithoutCancel so the watcher outlives the caller's context;
-	// the only way to stop it is via Stop() setting ts.stopping.
-	go ts.watchConnection(context.WithoutCancel(ctx))
+	// Spawn the connection watcher only when no watcher is already running.
+	// A watcher goroutine survives across restarts (it loops inside
+	// watchConnection); reprobe may call Start() while that goroutine is
+	// mid-restart with started==false, and we must not spawn a second one.
+	if !ts.watcherAlive {
+		ts.watcherAlive = true
+		// Use WithoutCancel so the watcher outlives the caller's context;
+		// the only way to stop it is via Stop() setting ts.stopping.
+		go ts.watchConnection(context.WithoutCancel(ctx))
+	}
 
 	return nil
 }
@@ -281,9 +286,15 @@ func (ts *Toolset) doStart(ctx context.Context) error {
 
 // watchConnection monitors the MCP server connection and auto-restarts it
 // if the server dies unexpectedly (i.e. we didn't call Stop()).
-// Only one watchConnection goroutine exists per Toolset; it is spawned by
-// Start() and loops across restarts without spawning additional goroutines.
+// Exactly one watchConnection goroutine exists per Toolset while ts.watcherAlive
+// is true; it is spawned by Start() and cleared on exit.
 func (ts *Toolset) watchConnection(ctx context.Context) {
+	defer func() {
+		ts.mu.Lock()
+		ts.watcherAlive = false
+		ts.mu.Unlock()
+	}()
+
 	for {
 		err := ts.mcpClient.Wait()
 

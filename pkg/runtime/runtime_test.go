@@ -135,6 +135,17 @@ func (b *streamBuilder) AddStopWithUsage(input, output int64) *streamBuilder {
 	return b
 }
 
+func (b *streamBuilder) AddToolCallStopWithUsage(input, output int64) *streamBuilder {
+	b.responses = append(b.responses, chat.MessageStreamResponse{
+		Choices: []chat.MessageStreamChoice{{
+			Index:        0,
+			FinishReason: chat.FinishReasonToolCalls,
+		}},
+		Usage: &chat.Usage{InputTokens: input, OutputTokens: output},
+	})
+	return b
+}
+
 func (b *streamBuilder) Build() *mockStream { return &mockStream{responses: b.responses} }
 
 type mockProvider struct {
@@ -763,7 +774,7 @@ func TestGetTools_WarningHandling(t *testing.T) {
 			sessionSpan := trace.SpanFromContext(t.Context())
 
 			// First call
-			tools1, err := rt.getTools(t.Context(), root, sessionSpan, events)
+			tools1, err := rt.getTools(t.Context(), root, sessionSpan, events, true)
 			require.NoError(t, err)
 			require.Len(t, tools1, tt.wantToolCount)
 
@@ -1980,4 +1991,210 @@ func TestRunStream_EmptyMessages_SendUserMessage(t *testing.T) {
 		events = append(events, ev)
 	}
 	require.NotEmpty(t, events)
+}
+
+// recordingProvider wraps a sequence of mock streams and records the tools
+// passed to each CreateChatCompletionStream call.
+type recordingProvider struct {
+	id      string
+	streams []*mockStream
+	callIdx int
+
+	mu            sync.Mutex
+	recordedCalls [][]tools.Tool // tools passed on each call
+}
+
+func (r *recordingProvider) ID() string { return r.id }
+
+func (r *recordingProvider) CreateChatCompletionStream(_ context.Context, _ []chat.Message, toolList []tools.Tool) (chat.MessageStream, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Record the tool names for this call.
+	r.recordedCalls = append(r.recordedCalls, append([]tools.Tool{}, toolList...))
+
+	if r.callIdx >= len(r.streams) {
+		return newStreamBuilder().AddStopWithUsage(1, 1).Build(), nil
+	}
+	s := r.streams[r.callIdx]
+	r.callIdx++
+	return s, nil
+}
+
+func (r *recordingProvider) BaseConfig() base.Config { return base.Config{} }
+func (r *recordingProvider) MaxTokens() int          { return 0 }
+
+// flappyRuntimeToolSet is a ToolSet+Startable that fails on the first N
+// Start() calls and succeeds on all subsequent ones, revealing a new tool
+// on success.
+type flappyRuntimeToolSet struct {
+	mu        sync.Mutex
+	attempts  int
+	failUntil int // fail while attempts <= failUntil
+	newTool   tools.Tool
+}
+
+func (f *flappyRuntimeToolSet) Start(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	if f.attempts <= f.failUntil {
+		return errors.New("server unavailable")
+	}
+	return nil
+}
+
+func (f *flappyRuntimeToolSet) Stop(_ context.Context) error { return nil }
+
+func (f *flappyRuntimeToolSet) Tools(_ context.Context) ([]tools.Tool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.attempts <= f.failUntil {
+		return nil, nil
+	}
+	return []tools.Tool{f.newTool}, nil
+}
+
+// TestReprobe_NewToolsAvailableAfterToolCall verifies that when a toolset
+// fails to start initially but succeeds after a tool call runs (simulating
+// an install step), the reprobe mechanism surfaces the new tool to the model
+// on its very next response — within the same user turn.
+func TestReprobe_NewToolsAvailableAfterToolCall(t *testing.T) {
+	t.Parallel()
+
+	mcpTool := tools.Tool{Name: "mcp_hello", Parameters: map[string]any{}}
+	installTool := tools.Tool{
+		Name:       "install_mcp",
+		Parameters: map[string]any{},
+		Handler: func(_ context.Context, _ tools.ToolCall) (*tools.ToolCallResult, error) {
+			return tools.ResultSuccess("installed"), nil
+		},
+	}
+
+	// Turn 1: model calls install_mcp and keeps going (FinishReasonToolCall → loop continues).
+	// Turn 2: model sees mcp_hello in its tool list and stops.
+	turn1 := newStreamBuilder().
+		AddToolCallName("call_1", "install_mcp").
+		AddToolCallArguments("call_1", `{}`).
+		AddToolCallStopWithUsage(5, 5).
+		Build()
+	turn2 := newStreamBuilder().
+		AddContent("MCP is now available").
+		AddStopWithUsage(3, 3).
+		Build()
+
+	flappy := &flappyRuntimeToolSet{newTool: mcpTool, failUntil: 2}
+	installTS := newStubToolSet(nil, []tools.Tool{installTool}, nil)
+
+	prov := &recordingProvider{
+		id:      "test/mock-model",
+		streams: []*mockStream{turn1, turn2},
+	}
+
+	root := agent.New("root", "test",
+		agent.WithModel(prov),
+		agent.WithToolSets(installTS, flappy),
+	)
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	rt.registerDefaultTools()
+
+	sess := session.New(session.WithUserMessage("Install and use MCP"))
+	sess.Title = "reprobe test"
+	sess.ToolsApproved = true
+
+	evCh := rt.RunStream(t.Context(), sess)
+	var events []Event
+	for ev := range evCh {
+		events = append(events, ev)
+	}
+
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+
+	require.GreaterOrEqual(t, len(prov.recordedCalls), 2, "expected at least 2 model calls")
+
+	// First model call: only install_mcp available (mcp_hello not yet).
+	call1Names := toolNames(prov.recordedCalls[0])
+	assert.Contains(t, call1Names, "install_mcp", "turn 1 must include install_mcp")
+	assert.NotContains(t, call1Names, "mcp_hello", "turn 1 must NOT include mcp_hello before install")
+
+	// Second model call: mcp_hello must be visible.
+	call2Names := toolNames(prov.recordedCalls[1])
+	assert.Contains(t, call2Names, "mcp_hello", "turn 2 must include mcp_hello after reprobe")
+
+	// A ToolsetInfo event with the new count must have been emitted during reprobe.
+	var toolsetInfoCounts []int
+	for _, ev := range events {
+		if ti, ok := ev.(*ToolsetInfoEvent); ok {
+			toolsetInfoCounts = append(toolsetInfoCounts, ti.AvailableTools)
+		}
+	}
+	assert.Contains(t, toolsetInfoCounts, 2, "ToolsetInfo with count=2 expected after reprobe")
+}
+
+// TestReprobe_NoChangeMeansNoExtraEvents verifies that reprobe is a no-op
+// (no extra ToolsetInfo events, no panics) when no new tools appear after
+// a tool call.
+func TestReprobe_NoChangeMeansNoExtraEvents(t *testing.T) {
+	t.Parallel()
+
+	staticTool := tools.Tool{
+		Name:       "do_thing",
+		Parameters: map[string]any{},
+		Handler: func(_ context.Context, _ tools.ToolCall) (*tools.ToolCallResult, error) {
+			return tools.ResultSuccess("done"), nil
+		},
+	}
+
+	stream1 := newStreamBuilder().
+		AddToolCallName("c1", "do_thing").
+		AddToolCallArguments("c1", `{}`).
+		AddStopWithUsage(5, 5).
+		Build()
+
+	prov := &recordingProvider{
+		id:      "test/mock-model",
+		streams: []*mockStream{stream1},
+	}
+
+	ts := newStubToolSet(nil, []tools.Tool{staticTool}, nil)
+	root := agent.New("root", "test", agent.WithModel(prov), agent.WithToolSets(ts))
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+	rt.registerDefaultTools()
+
+	sess := session.New(session.WithUserMessage("Do the thing"))
+	sess.Title = "no-change reprobe test"
+	sess.ToolsApproved = true
+
+	evCh := rt.RunStream(t.Context(), sess)
+	var events []Event
+	for ev := range evCh {
+		events = append(events, ev)
+	}
+
+	// Count ToolsetInfo events — reprobe should NOT emit an extra one.
+	var counts []int
+	for _, ev := range events {
+		if ti, ok := ev.(*ToolsetInfoEvent); ok {
+			counts = append(counts, ti.AvailableTools)
+		}
+	}
+	// All counts should be 1 (the static tool).
+	for _, c := range counts {
+		assert.Equal(t, 1, c, "unexpected ToolsetInfo count — reprobe emitted extra event when tools unchanged")
+	}
+}
+
+func toolNames(ts []tools.Tool) []string {
+	names := make([]string, len(ts))
+	for i, t := range ts {
+		names[i] = t.Name
+	}
+	return names
 }

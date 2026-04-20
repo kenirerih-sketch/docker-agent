@@ -44,6 +44,34 @@ func (s *stubToolSet) Tools(context.Context) ([]tools.Tool, error) {
 	return s.tools, nil
 }
 
+// flappyToolSet is a ToolSet+Startable that returns a scripted sequence of
+// errors from Start(). nil in the sequence means success.
+type flappyToolSet struct {
+	errs    []error
+	callIdx int
+	stubs   []tools.Tool
+}
+
+var (
+	_ tools.ToolSet   = (*flappyToolSet)(nil)
+	_ tools.Startable = (*flappyToolSet)(nil)
+)
+
+func (f *flappyToolSet) Start(_ context.Context) error {
+	if f.callIdx >= len(f.errs) {
+		return nil
+	}
+	err := f.errs[f.callIdx]
+	f.callIdx++
+	return err
+}
+
+func (f *flappyToolSet) Stop(_ context.Context) error { return nil }
+
+func (f *flappyToolSet) Tools(_ context.Context) ([]tools.Tool, error) {
+	return f.stubs, nil
+}
+
 func TestAgentTools(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -209,4 +237,62 @@ func TestModelOverride_ConcurrentAccess(t *testing.T) {
 	<-done
 	<-done
 	// If we got here without a race condition panic, the test passes
+}
+
+// TestAgentReProbeEmitsWarningThenNotice verifies the full retry lifecycle:
+// turn 1 fails → warning emitted; turn 2 succeeds → notice emitted; tools available.
+func TestAgentReProbeEmitsWarningThenNotice(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("server unavailable")
+	stub := &flappyToolSet{
+		errs:  []error{errBoom, nil},
+		stubs: []tools.Tool{{Name: "mcp_ping", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(stub))
+
+	// Turn 1: start fails → 1 warning, 0 tools.
+	got, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, got, "turn 1: no tools while toolset is unavailable")
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "turn 1: exactly one warning expected")
+	assert.Contains(t, warnings[0], "start failed")
+
+	// Turn 2: start succeeds → 1 recovery warning, tools available.
+	got, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "turn 2: tool should be available after recovery")
+	recovery := a.DrainWarnings()
+	require.Len(t, recovery, 1, "turn 2: exactly one recovery warning expected")
+	assert.Contains(t, recovery[0], "now available", "turn 2: recovery warning must mention availability")
+}
+
+// TestAgentNoDuplicateStartWarnings verifies that repeated failures generate
+// only one warning (on the first failure), not one per retry.
+func TestAgentNoDuplicateStartWarnings(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("server unavailable")
+	stub := &flappyToolSet{
+		errs:  []error{errBoom, errBoom, errBoom},
+		stubs: []tools.Tool{{Name: "mcp_ping", Parameters: map[string]any{}}},
+	}
+	a := New("root", "test", WithToolSets(stub))
+
+	// Turn 1: first failure → warning.
+	_, err := a.Tools(t.Context())
+	require.NoError(t, err)
+	warnings := a.DrainWarnings()
+	require.Len(t, warnings, 1, "turn 1: exactly one warning on first failure")
+
+	// Turn 2: repeated failure → no new warning.
+	_, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, a.DrainWarnings(), "turn 2: no duplicate warning on repeated failure")
+
+	// Turn 3: still failing → still no new warning.
+	_, err = a.Tools(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, a.DrainWarnings(), "turn 3: no duplicate warning on repeated failure")
 }

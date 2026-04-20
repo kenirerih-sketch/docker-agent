@@ -100,7 +100,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		r.emitAgentWarnings(a, chanSend(events))
 		r.configureToolsetHandlers(a, events)
 
-		agentTools, err := r.getTools(ctx, a, sessionSpan, events)
+		agentTools, err := r.getTools(ctx, a, sessionSpan, events, true)
 		if err != nil {
 			events <- Error(fmt.Sprintf("failed to get tools: %v", err))
 			return
@@ -163,7 +163,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			r.emitAgentWarnings(a, chanSend(events))
 			r.configureToolsetHandlers(a, events)
 
-			agentTools, err := r.getTools(ctx, a, sessionSpan, events)
+			agentTools, err := r.getTools(ctx, a, sessionSpan, events, true)
 			if err != nil {
 				events <- Error(fmt.Sprintf("failed to get tools: %v", err))
 				return
@@ -382,6 +382,20 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 			r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
 
+			// Re-probe toolsets after tool calls: an install/setup tool call may
+			// have made a previously-unavailable LSP or MCP connectable. reprobe()
+			// calls ensureToolSetsAreStarted, emits recovery notices, and updates
+			// the TUI tool-count immediately.
+			//
+			// The new tools are picked up by the next iteration's getTools() call
+			// at the top of this loop, so the model sees them on its very next
+			// response — within the same user turn, without requiring a new user
+			// message. reprobe's return value is intentionally discarded here;
+			// the top-of-loop getTools() is the authoritative source.
+			if len(res.Calls) > 0 {
+				r.reprobe(ctx, sess, a, agentTools, sessionSpan, events)
+			}
+
 			// Check for degenerate tool call loops
 			if loopDetector.record(res.Calls) {
 				toolName := "unknown"
@@ -575,17 +589,14 @@ func (r *LocalRuntime) compactIfNeeded(
 	r.Summarize(ctx, sess, "", events)
 }
 
-// getTools executes tool retrieval with automatic OAuth handling
-func (r *LocalRuntime) getTools(ctx context.Context, a *agent.Agent, sessionSpan trace.Span, events chan Event) ([]tools.Tool, error) {
-	shouldEmitMCPInit := len(a.ToolSets()) > 0
-	if shouldEmitMCPInit {
+// getTools executes tool retrieval with automatic OAuth handling.
+// emitLifecycleEvents controls whether MCPInitStarted/Finished are emitted;
+// pass false when calling from reprobe to avoid spurious TUI spinner flicker.
+func (r *LocalRuntime) getTools(ctx context.Context, a *agent.Agent, sessionSpan trace.Span, events chan Event, emitLifecycleEvents bool) ([]tools.Tool, error) {
+	if emitLifecycleEvents && len(a.ToolSets()) > 0 {
 		events <- MCPInitStarted(a.Name())
+		defer func() { events <- MCPInitFinished(a.Name()) }()
 	}
-	defer func() {
-		if shouldEmitMCPInit {
-			events <- MCPInitFinished(a.Name())
-		}
-	}()
 
 	agentTools, err := a.Tools(ctx)
 	if err != nil {
@@ -616,15 +627,15 @@ func (r *LocalRuntime) configureToolsetHandlers(a *agent.Agent, events chan Even
 	}
 }
 
-// emitAgentWarnings drains and emits any agent initialization warnings.
+// emitAgentWarnings drains and emits any pending toolset warnings as persistent
+// TUI notifications. Both start failures and recovery notices are emitted as
+// warnings so they remain visible until the user dismisses them.
 func (r *LocalRuntime) emitAgentWarnings(a *agent.Agent, send func(Event)) {
 	warnings := a.DrainWarnings()
-	if len(warnings) == 0 {
-		return
+	if len(warnings) > 0 {
+		slog.Warn("Tool setup partially failed; continuing", "agent", a.Name(), "warnings", warnings)
+		send(Warning(formatToolWarning(a, warnings), a.Name()))
 	}
-
-	slog.Warn("Tool setup partially failed; continuing", "agent", a.Name(), "warnings", warnings)
-	send(Warning(formatToolWarning(a, warnings), a.Name()))
 }
 
 func formatToolWarning(a *agent.Agent, warnings []string) string {
@@ -668,4 +679,53 @@ func chanSend(ch chan Event) func(Event) {
 		default:
 		}
 	}
+}
+
+// reprobe re-runs ensureToolSetsAreStarted after a batch of tool calls.
+// If new tools became available (by name-set diff), it emits recovery notices
+// and a ToolsetInfo event to update the TUI immediately. The new tools will be
+// picked up by the next iteration's getTools() call at the top of the loop.
+//
+// reprobe deliberately does NOT return the new tool list: the top-of-loop
+// getTools() is the single authoritative source for agentTools each iteration.
+func (r *LocalRuntime) reprobe(
+	ctx context.Context,
+	sess *session.Session,
+	a *agent.Agent,
+	currentTools []tools.Tool,
+	sessionSpan trace.Span,
+	events chan Event,
+) {
+	updated, err := r.getTools(ctx, a, sessionSpan, events, false)
+	if err != nil {
+		slog.Warn("reprobe: getTools failed", "agent", a.Name(), "error", err)
+		return
+	}
+	updated = filterExcludedTools(updated, sess.ExcludedTools)
+
+	// Emit any pending warnings/notices that getTools just generated.
+	r.emitAgentWarnings(a, chanSend(events))
+
+	// Compute added tools by comparing name-sets (not just counts), so we
+	// correctly handle a toolset that replaced one tool with another.
+	prev := make(map[string]struct{}, len(currentTools))
+	for _, t := range currentTools {
+		prev[t.Name] = struct{}{}
+	}
+	var added []string
+	for _, t := range updated {
+		if _, exists := prev[t.Name]; !exists {
+			added = append(added, t.Name)
+		}
+	}
+
+	if len(added) == 0 {
+		return
+	}
+
+	slog.Info("New tools available after toolset re-probe",
+		"agent", a.Name(), "added", added)
+
+	// Emit updated tool count to the TUI immediately.
+	chanSend(events)(ToolsetInfo(len(updated), false, a.Name()))
 }
