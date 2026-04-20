@@ -298,13 +298,18 @@ func createMCPTool(ctx context.Context, toolset latest.Toolset, _ string, runCon
 	envProvider := runConfig.EnvProvider()
 
 	// Resolve the working directory once; used for all subprocess-based branches.
-	// The remote branch never reaches here because working_dir is rejected by
-	// validation for toolsets with a remote.url.
+	// Note: validation only rejects working_dir for toolsets with an explicit
+	// remote.url. Ref-based MCPs (e.g. ref: docker:context7) pass validation
+	// regardless, because their transport type is only known at runtime via the
+	// MCP Catalog API. If such a ref resolves to a remote server at runtime, we
+	// return an explicit error below rather than silently discarding the field.
 	cwd := resolveToolsetWorkingDir(toolset.WorkingDir, runConfig.WorkingDir)
 
 	// S1: validate the resolved directory exists (if one was specified) so we
 	// surface a clear error now rather than a cryptic exec failure later.
-	if toolset.WorkingDir != "" {
+	// Skip this check for ref-based toolsets whose transport type is not yet
+	// known — the check would be premature and potentially wrong.
+	if toolset.WorkingDir != "" && toolset.Ref == "" {
 		if err := checkDirExists(cwd, "mcp"); err != nil {
 			return nil, err
 		}
@@ -321,7 +326,21 @@ func createMCPTool(ctx context.Context, toolset latest.Toolset, _ string, runCon
 
 		// TODO(dga): until the MCP Gateway supports oauth with docker agent, we fetch the remote url and directly connect to it.
 		if serverSpec.Type == "remote" {
+			// working_dir cannot be validated at config-parse time for ref-based
+			// MCPs because their transport type is only known here. Return a clear
+			// error rather than silently discarding the field.
+			if toolset.WorkingDir != "" {
+				return nil, fmt.Errorf("working_dir is not supported for MCP toolset %q: ref %q resolves to a remote server (no local subprocess)",
+					toolset.Name, toolset.Ref)
+			}
 			return mcp.NewRemoteToolset(toolset.Name, serverSpec.Remote.URL, serverSpec.Remote.TransportType, nil, nil), nil
+		}
+
+		// The ref resolves to a local subprocess — validate the working directory now.
+		if toolset.WorkingDir != "" {
+			if err := checkDirExists(cwd, "mcp"); err != nil {
+				return nil, err
+			}
 		}
 
 		env, err := environment.ExpandAll(ctx, environment.ToValues(toolset.Env), envProvider)
@@ -361,7 +380,9 @@ func createMCPTool(ctx context.Context, toolset latest.Toolset, _ string, runCon
 
 		return mcp.NewToolsetCommand(toolset.Name, resolvedCommand, toolset.Args, env, cwd), nil
 
-	// Remote MCP Server — working_dir is rejected at validation time for this branch.
+	// Remote MCP Server — working_dir is rejected at validation time for this
+	// branch (explicit remote.url in config). Ref-based MCPs that resolve to
+	// remote at runtime are handled with an explicit error in the Ref branch above.
 	case toolset.Remote.URL != "":
 		expander := js.NewJsExpander(envProvider)
 

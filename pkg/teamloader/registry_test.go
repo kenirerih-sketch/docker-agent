@@ -273,3 +273,47 @@ func TestCreateLSPTool_WorkingDir_ReachesHandler(t *testing.T) {
 	require.True(t, ok, "expected *builtin.LSPTool")
 	assert.Equal(t, customDir, lsp.WorkingDir())
 }
+
+// TestCreateMCPTool_RefRemote_WorkingDir_ReturnsError verifies that when a
+// ref-based MCP resolves to a remote server at runtime, setting working_dir
+// returns a clear error rather than silently discarding the field.
+func TestCreateMCPTool_RefRemote_WorkingDir_ReturnsError(t *testing.T) {
+	// The "docker:remote-server" ref is seeded as type "remote" in TestMain.
+	toolset := latest.Toolset{
+		Type:       "mcp",
+		Ref:        "docker:remote-server",
+		WorkingDir: "./workspace",
+	}
+
+	registry := NewDefaultToolsetRegistry()
+	runConfig := &config.RuntimeConfig{
+		Config:              config.Config{WorkingDir: t.TempDir()},
+		EnvProviderForTests: environment.NewOsEnvProvider(),
+	}
+
+	_, err := registry.CreateTool(t.Context(), toolset, ".", runConfig, "test-agent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "working_dir is not supported")
+	assert.Contains(t, err.Error(), "remote server")
+}
+
+// TestCreateMCPTool_RefRemote_NoWorkingDir_Succeeds verifies that a ref-based
+// MCP that resolves to a remote server still works fine when working_dir is
+// not set (the common case — regression guard).
+func TestCreateMCPTool_RefRemote_NoWorkingDir_Succeeds(t *testing.T) {
+	// The "docker:remote-server" ref is seeded as type "remote" in TestMain.
+	toolset := latest.Toolset{
+		Type: "mcp",
+		Ref:  "docker:remote-server",
+	}
+
+	registry := NewDefaultToolsetRegistry()
+	runConfig := &config.RuntimeConfig{
+		Config:              config.Config{WorkingDir: t.TempDir()},
+		EnvProviderForTests: environment.NewOsEnvProvider(),
+	}
+
+	tool, err := registry.CreateTool(t.Context(), toolset, ".", runConfig, "test-agent")
+	require.NoError(t, err)
+	require.NotNil(t, tool)
+}
