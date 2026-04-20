@@ -358,6 +358,12 @@ func TestNewSQLiteSessionStore_DirectoryNotWritable(t *testing.T) {
 
 	assert.Contains(t, err.Error(), "cannot create database")
 	assert.Contains(t, err.Error(), "permission denied or file cannot be created")
+
+	// We should surface the real "cannot create database" error directly instead of
+	// running the backup+retry recovery path (which cannot fix a filesystem-level
+	// problem and would only wrap the real error in a confusing "migration failed"
+	// message).
+	assert.NotContains(t, err.Error(), "migration failed")
 }
 
 func TestUpdateSession_LazyCreation(t *testing.T) {
