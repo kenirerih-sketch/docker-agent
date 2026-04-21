@@ -3,6 +3,30 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.49.1] - 2026-04-21
+
+This release improves the shell tool's command handling and fixes documentation inconsistencies.
+
+## Improvements
+- Accepts "command" as an alias for "cmd" in shell tool calls to improve compatibility with different AI models
+- Improves error messaging when shell commands are empty or blank
+
+## Bug Fixes
+- Fixes documentation and code divergences reported in issue #2464 with 36 targeted corrections
+- Prevents blank "cmd" parameters from interfering with "command" alias functionality
+
+## Technical Changes
+- Updates configuration schema version to 8 in documentation
+- Updates CHANGELOG.md for v1.49.0 release
+
+### Pull Requests
+
+- [#2464](https://github.com/docker/docker-agent/pull/2464) - docs: fix doc-code divergences reported in issue #2464
+- [#2479](https://github.com/docker/docker-agent/pull/2479) - docs: fix doc-code divergences reported in #2464
+- [#2481](https://github.com/docker/docker-agent/pull/2481) - shell: accept `command` as alias for `cmd` and improve empty-arg error
+- [#2483](https://github.com/docker/docker-agent/pull/2483) - docs: update CHANGELOG.md for v1.49.0
+
+
 ## [v1.49.0] - 2026-04-21
 
 This release improves DMR support, adds skill filtering capabilities, and includes several bug fixes for OpenTelemetry and security hardening.
@@ -2096,3 +2120,5 @@ This release improves the terminal user interface with better error handling and
 [v1.48.0]: https://github.com/docker/docker-agent/releases/tag/v1.48.0
 
 [v1.49.0]: https://github.com/docker/docker-agent/releases/tag/v1.49.0
+
+[v1.49.1]: https://github.com/docker/docker-agent/releases/tag/v1.49.1
