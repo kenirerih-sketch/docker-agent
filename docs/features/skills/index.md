@@ -34,6 +34,40 @@ agents:
 
 </div>
 
+## Filtering Skills
+
+The `skills` field also accepts a list, letting you restrict the agent to a specific subset of skills instead of exposing every discovered one. List items are classified automatically:
+
+- `"local"` or any `http://` / `https://` URL → a **source** to load skills from
+- any other string → the **name** of a skill to include
+
+When only names are given, local sources are used by default.
+
+```yaml
+agents:
+  # Load every discovered local skill (same as `skills: true`).
+  full:
+    skills: true
+
+  # Load local skills, but only expose "commit" and "poem".
+  scoped:
+    skills:
+      - commit
+      - poem
+
+  # Combine an explicit source with a name filter.
+  remote_filtered:
+    skills:
+      - https://skills.example.com
+      - commit
+
+  # Disable skills entirely.
+  none:
+    skills: false
+```
+
+A name that doesn't match any discovered skill is logged as a warning at startup but is otherwise ignored.
+
 ## SKILL.md Format
 
 <!-- yaml-lint:skip -->
@@ -171,11 +205,11 @@ When asked to create a Dockerfile:
 EOF
 ```
 
-The skill will automatically be available to any agent with `skills: true`.
+The skill will automatically be available to any agent with skills enabled (`skills: true`, or a list that targets its name — see [Filtering Skills](#filtering-skills)).
 
 <div class="callout callout-info" markdown="1">
 <div class="callout-title">ℹ️ See also
 </div>
-  <p>Skills are enabled in the <a href="{{ '/configuration/agents/' | relative_url }}">Agent Config</a> with the <code>skills: true</code> property. For tool-based capabilities, see <a href="{{ '/concepts/tools/' | relative_url }}">Tools</a>.</p>
+  <p>Skills are enabled in the <a href="{{ '/configuration/agents/' | relative_url }}">Agent Config</a> with the <code>skills</code> property (boolean or list). For tool-based capabilities, see <a href="{{ '/concepts/tools/' | relative_url }}">Tools</a>.</p>
 
 </div>

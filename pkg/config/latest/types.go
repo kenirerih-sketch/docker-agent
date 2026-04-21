@@ -385,15 +385,32 @@ type AgentConfig struct {
 
 const SkillSourceLocal = "local"
 
-// SkillsConfig controls skill discovery sources for an agent.
+// errSkillsFormat is returned when the `skills` value is neither a boolean nor
+// a list of strings.
+var errSkillsFormat = errors.New("skills must be a boolean or a list of skill sources and/or names")
+
+// SkillsConfig controls skill discovery sources and filtering for an agent.
 // Supports three YAML formats:
 //   - Boolean: `skills: true` (equivalent to ["local"]) or `skills: false` (disabled)
-//   - List:    `skills: ["local", "http://example.com"]`
+//   - List:    `skills: ["local", "http://example.com"]` — sources to load from
+//   - List:    `skills: ["git", "docker"]`               — names of skills to include
+//   - List:    `skills: ["local", "git"]`                — mix of sources and names
+//
+// Items in the list are classified automatically:
+//   - "local" or any HTTP/HTTPS URL → a skill source (added to Sources)
+//   - any other string             → a skill name filter (added to Include)
+//
+// When Include is non-empty but no explicit sources are provided, Sources defaults
+// to ["local"] so that `skills: ["git"]` loads local skills and keeps only "git".
 //
 // The special source "local" loads skills from the filesystem (standard locations).
 // HTTP/HTTPS URLs load skills from remote servers per the well-known skills discovery spec.
 type SkillsConfig struct { //nolint:recvcheck // MarshalYAML/MarshalJSON must use value receiver, UnmarshalYAML/UnmarshalJSON must use pointer
+	// Sources lists where to load skills from: "local" and/or HTTP/HTTPS URLs.
 	Sources []string
+	// Include optionally filters loaded skills by name. When non-empty, only
+	// skills whose Name matches an entry in this list are exposed to the agent.
+	Include []string
 }
 
 func (s SkillsConfig) Enabled() bool {
@@ -407,69 +424,111 @@ func (s SkillsConfig) HasLocal() bool {
 func (s SkillsConfig) RemoteURLs() []string {
 	var urls []string
 	for _, src := range s.Sources {
-		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		if isRemoteURL(src) {
 			urls = append(urls, src)
 		}
 	}
 	return urls
 }
 
+// isRemoteURL reports whether s looks like an HTTP or HTTPS URL.
+func isRemoteURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+// isSkillSource reports whether a list item should be treated as a skill source
+// (the special value "local" or an HTTP/HTTPS URL) rather than a skill name.
+func isSkillSource(item string) bool {
+	return item == SkillSourceLocal || isRemoteURL(item)
+}
+
+// setFromBool is the shared "boolean shorthand" logic for YAML and JSON
+// unmarshaling: `true` means load local skills, `false` disables skills.
+func (s *SkillsConfig) setFromBool(b bool) {
+	s.Include = nil
+	if b {
+		s.Sources = []string{SkillSourceLocal}
+	} else {
+		s.Sources = nil
+	}
+}
+
+// setFromList splits items into Sources ("local" + URLs) and Include (skill
+// name filters). When Include is non-empty and Sources is empty, Sources
+// defaults to ["local"] so that `skills: ["git"]` filters local skills
+// without requiring the user to spell out the source.
+func (s *SkillsConfig) setFromList(items []string) {
+	s.Sources = nil
+	s.Include = nil
+	for _, item := range items {
+		if isSkillSource(item) {
+			s.Sources = append(s.Sources, item)
+		} else {
+			s.Include = append(s.Include, item)
+		}
+	}
+	if len(s.Sources) == 0 && len(s.Include) > 0 {
+		s.Sources = []string{SkillSourceLocal}
+	}
+}
+
+// marshalValue returns the canonical encoded representation: `false` when
+// disabled, `true` when only the default local source is set, otherwise a
+// flat []string combining Sources and Include. The default local source is
+// omitted from the list when Include is non-empty so the output round-trips
+// back through setFromList.
+func (s SkillsConfig) marshalValue() any {
+	switch {
+	case len(s.Sources) == 0 && len(s.Include) == 0:
+		return false
+	case len(s.Include) == 0 && len(s.Sources) == 1 && s.Sources[0] == SkillSourceLocal:
+		return true
+	}
+
+	sources := s.Sources
+	if len(s.Include) > 0 && len(sources) == 1 && sources[0] == SkillSourceLocal {
+		sources = nil
+	}
+	out := make([]string, 0, len(sources)+len(s.Include))
+	out = append(out, sources...)
+	out = append(out, s.Include...)
+	return out
+}
+
 func (s *SkillsConfig) UnmarshalYAML(unmarshal func(any) error) error {
 	var b bool
 	if err := unmarshal(&b); err == nil {
-		if b {
-			s.Sources = []string{SkillSourceLocal}
-		} else {
-			s.Sources = nil
-		}
+		s.setFromBool(b)
 		return nil
 	}
-
-	var sources []string
-	if err := unmarshal(&sources); err != nil {
-		return errors.New("skills must be a boolean or a list of sources")
+	var items []string
+	if err := unmarshal(&items); err != nil {
+		return errSkillsFormat
 	}
-	s.Sources = sources
+	s.setFromList(items)
 	return nil
 }
 
 func (s SkillsConfig) MarshalYAML() (any, error) {
-	if len(s.Sources) == 0 {
-		return false, nil
-	}
-	if len(s.Sources) == 1 && s.Sources[0] == SkillSourceLocal {
-		return true, nil
-	}
-	return s.Sources, nil
+	return s.marshalValue(), nil
 }
 
 func (s *SkillsConfig) UnmarshalJSON(data []byte) error {
 	var b bool
 	if err := json.Unmarshal(data, &b); err == nil {
-		if b {
-			s.Sources = []string{SkillSourceLocal}
-		} else {
-			s.Sources = nil
-		}
+		s.setFromBool(b)
 		return nil
 	}
-
-	var sources []string
-	if err := json.Unmarshal(data, &sources); err != nil {
-		return errors.New("skills must be a boolean or a list of sources")
+	var items []string
+	if err := json.Unmarshal(data, &items); err != nil {
+		return errSkillsFormat
 	}
-	s.Sources = sources
+	s.setFromList(items)
 	return nil
 }
 
 func (s SkillsConfig) MarshalJSON() ([]byte, error) {
-	if len(s.Sources) == 0 {
-		return json.Marshal(false)
-	}
-	if len(s.Sources) == 1 && s.Sources[0] == SkillSourceLocal {
-		return json.Marshal(true)
-	}
-	return json.Marshal(s.Sources)
+	return json.Marshal(s.marshalValue())
 }
 
 // GetFallbackModels returns the fallback models from the config.

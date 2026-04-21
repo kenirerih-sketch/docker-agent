@@ -397,8 +397,26 @@
           "description": "Lifecycle hooks for executing shell commands at various points in the agent's execution"
         },
         "skills": {
-          "type": "boolean",
-          "description": "Enable skills discovery for this agent. When enabled, the agent can discover and load skill files (SKILL.md) from the workspace."
+          "description": "Enable skills discovery for this agent. Set to true to load all discovered skills from local filesystem sources; false disables skills. A list can mix sources (\"local\" or an HTTP/HTTPS URL) and/or skill names to include. If only names are given, local sources are loaded and filtered to just those skills.",
+          "oneOf": [
+            {
+              "type": "boolean",
+              "description": "When true, loads all discovered local skills. When false, skills are disabled."
+            },
+            {
+              "type": "array",
+              "description": "List combining skill sources and/or skill names to include. Items equal to \"local\" or starting with http:// or https:// are treated as sources; any other string is treated as a skill name filter.",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                ["local"],
+                ["local", "https://skills.example.com"],
+                ["git", "docker"],
+                ["local", "docker-build"]
+              ]
+            }
+          ]
         }
       },
       "additionalProperties": false
