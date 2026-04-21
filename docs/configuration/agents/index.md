@@ -18,8 +18,7 @@ agents:
     description: string # Required: what this agent does
     instruction: string # Required: system prompt
     sub_agents: [list] # Optional: local or external sub-agent references
-    toolsets: [list] # Optional: tool configurations
-    rag: [list] # Optional: RAG source references
+    toolsets: [list] # Optional: tool configurations (use `type: rag` for RAG sources)
     fallback: # Optional: fallback config
       models: [list]
       retries: 2
