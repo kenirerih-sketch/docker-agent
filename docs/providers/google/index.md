@@ -10,9 +10,25 @@ _Use Gemini 2.5 Flash, Gemini 3 Pro, and other Google models with docker-agent._
 
 ## Setup
 
+docker-agent reads the first credential it finds from these environment variables (see `pkg/model/provider/gemini/client.go`):
+
+| Variable                    | Purpose                                                                             |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `GOOGLE_API_KEY`            | Primary Gemini API key.                                                             |
+| `GEMINI_API_KEY`            | Alternative name for the Gemini API key (also used by the official Google SDK).     |
+| `GOOGLE_GENAI_USE_VERTEXAI` | When set (any value), routes through Vertex AI instead of the Gemini Developer API. |
+| `GOOGLE_CLOUD_PROJECT`      | GCP project used when `GOOGLE_GENAI_USE_VERTEXAI` is set or for Vertex AI Model Garden. |
+| `GOOGLE_CLOUD_LOCATION`     | GCP region for Vertex AI (defaults to the SDK default).                             |
+
 ```bash
-# Set your API key
-export GOOGLE_API_KEY="AI..."
+# Gemini Developer API
+export GOOGLE_API_KEY="AI..."   # or GEMINI_API_KEY
+
+# Vertex AI (no API key; uses Application Default Credentials)
+gcloud auth application-default login
+export GOOGLE_GENAI_USE_VERTEXAI=1
+export GOOGLE_CLOUD_PROJECT="my-gcp-project"
+export GOOGLE_CLOUD_LOCATION="us-central1"
 ```
 
 ## Configuration

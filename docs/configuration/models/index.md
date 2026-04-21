@@ -14,7 +14,10 @@ _Complete reference for defining models with providers, parameters, and reasonin
 ```yaml
 models:
   model_name:
-    provider: string # Required: openai, anthropic, google, amazon-bedrock, dmr
+    provider: string # Required. One of: openai, anthropic, google, amazon-bedrock,
+                     # dmr, mistral, xai, nebius, minimax, requesty, azure, ollama,
+                     # github-copilot, or a named provider defined under the top-level
+                     # `providers:` section.
     model: string # Required: model identifier
     temperature: float # Optional: 0.0–1.0
     max_tokens: integer # Optional: response length limit
@@ -65,7 +68,7 @@ models:
   gpt:
     provider: openai
     model: gpt-5-mini
-    thinking_budget: low # minimal | low | medium | high
+    thinking_budget: low # minimal | low | medium | high | xhigh | max | adaptive/<level>
 ```
 
 ### Anthropic
@@ -101,7 +104,7 @@ models:
   gemini3:
     provider: google
     model: gemini-3-flash
-    thinking_budget: medium # minimal | low | medium | high
+    thinking_budget: medium # minimal | low | medium | high | xhigh | max | adaptive/<level>
 ```
 
 ### Disabling Thinking

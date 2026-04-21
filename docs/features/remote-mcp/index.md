@@ -41,6 +41,36 @@ toolsets:
 
 For full configuration details, see the [Tool Config]({{ '/configuration/tools/' | relative_url }}) page.
 
+### OAuth for servers without Dynamic Client Registration
+
+Most remote MCP servers that require OAuth support [Dynamic Client Registration (RFC 7591)]({{ 'https://datatracker.ietf.org/doc/html/rfc7591' }}) — no configuration is needed, docker-agent handles the flow for you.
+
+For servers that do **not** support DCR, provide explicit OAuth credentials with the `oauth:` block:
+
+```yaml
+toolsets:
+  - type: mcp
+    remote:
+      url: "https://mcp.example.com/mcp"
+      transport_type: "streamable"
+      oauth:
+        clientId: "my-app-client-id"
+        clientSecret: "my-app-client-secret" # optional (public clients may omit)
+        callbackPort: 8765                   # optional; picks a free port otherwise
+        scopes:                              # optional; server-specific
+          - read
+          - write
+```
+
+| Field          | Type            | Required | Description                                                                                      |
+| -------------- | --------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `clientId`     | string          | ✓        | OAuth client ID registered with the remote MCP server.                                           |
+| `clientSecret` | string          | ✗        | OAuth client secret. Omit for public clients using PKCE.                                         |
+| `callbackPort` | integer         | ✗        | Local port to receive the OAuth redirect. If omitted, docker-agent picks a random free port.    |
+| `scopes`       | array[string]   | ✗        | Scopes to request during the authorization step. Values are server-specific.                     |
+
+Secrets should be stored in a credential helper or environment variable rather than committed — see [Secrets]({{ '/guides/secrets/' | relative_url }}) for interpolation patterns.
+
 ## Project Management &amp; Collaboration
 
 | Service    | URL                                | Transport | Description                           |
