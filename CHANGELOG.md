@@ -3,6 +3,35 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.49.0] - 2026-04-21
+
+This release improves DMR support, adds skill filtering capabilities, and includes several bug fixes for OpenTelemetry and security hardening.
+
+## What's New
+- Adds support for filtering skills by name in agent YAML configuration
+- Improves DMR support with better context size handling and structured configuration
+
+## Bug Fixes
+- Fixes OpenTelemetry service resource schema alignment
+- Fixes path traversal vulnerability and other security issues in artifact store, skills loader, hooks, shell and agent warnings
+- Fixes OpenTelemetry import ordering in tests
+
+## Technical Changes
+- Encodes agent source URL when using it as agent name and key for proper conversation handling in `serve api`
+- Moves localhost helper comment in OpenTelemetry code
+
+### Pull Requests
+
+- [#2351](https://github.com/docker/docker-agent/pull/2351) - Improve DMR support
+- [#2404](https://github.com/docker/docker-agent/pull/2404) - Merge pull request #2474 from dgageot/board/support-boolean-or-array-skills-in-yaml-f97b09f6
+- [#2442](https://github.com/docker/docker-agent/pull/2442) - fix(otel): align service resource schema
+- [#2470](https://github.com/docker/docker-agent/pull/2470) - docs: update CHANGELOG.md for v1.48.0
+- [#2472](https://github.com/docker/docker-agent/pull/2472) - bump github.com/docker/cli from v29.4.0+incompatible to v29.4.1+incompatible
+- [#2473](https://github.com/docker/docker-agent/pull/2473) - Encode agent source URL when using it as agent name and key, so that it can be used properly in conversations when using `serve api`
+- [#2474](https://github.com/docker/docker-agent/pull/2474) - Support filtering skills by name in agent YAML (#2404)
+- [#2480](https://github.com/docker/docker-agent/pull/2480) - fix: harden artifact store, skills loader, hooks, shell and agent warnings
+
+
 ## [v1.48.0] - 2026-04-20
 
 This release adds working directory configuration for MCP and LSP toolsets and improves toolset reliability with better retry handling.
@@ -2065,3 +2094,5 @@ This release improves the terminal user interface with better error handling and
 [v1.47.0]: https://github.com/docker/docker-agent/releases/tag/v1.47.0
 
 [v1.48.0]: https://github.com/docker/docker-agent/releases/tag/v1.48.0
+
+[v1.49.0]: https://github.com/docker/docker-agent/releases/tag/v1.49.0
