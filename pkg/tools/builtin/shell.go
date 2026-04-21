@@ -182,6 +182,9 @@ func (h *shellHandler) runNativeCommand(timeoutCtx, ctx context.Context, command
 
 	pg, err := createProcessGroup(cmd.Process)
 	if err != nil {
+		// Successfully started the child but couldn't install it in its own
+		// process group: clean it up before bailing out.
+		reapSpawnedChild(cmd, pg)
 		return tools.ResultError(fmt.Sprintf("Error creating process group: %s", err))
 	}
 
@@ -240,7 +243,9 @@ func (h *shellHandler) RunShellBackground(_ context.Context, params RunShellBack
 
 	pg, err := createProcessGroup(cmd.Process)
 	if err != nil {
-		_ = kill(cmd.Process, pg)
+		// Successfully started the child but couldn't install it in its own
+		// process group: clean it up before bailing out.
+		reapSpawnedChild(cmd, pg)
 		return tools.ResultError(fmt.Sprintf("Error creating process group: %s", err)), nil
 	}
 
@@ -359,6 +364,29 @@ func (h *shellHandler) StopBackgroundJob(_ context.Context, params StopBackgroun
 	}
 
 	return tools.ResultSuccess(fmt.Sprintf("Job %s stopped successfully", params.JobID)), nil
+}
+
+// reapSpawnedChild terminates a child that we've started but decided not
+// to run (e.g. follow-up setup failed) and waits for it so we don't leak a
+// zombie or its stdout/stderr pipes. SIGTERM is sent first; if the child
+// hasn't exited after a short grace period we escalate to SIGKILL.
+func reapSpawnedChild(cmd *exec.Cmd, pg *processGroup) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = kill(cmd.Process, pg)
+
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
 }
 
 // NewShellTool creates a new shell tool.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,8 +40,13 @@ type Agent struct {
 	addPromptFiles          []string
 	tools                   []tools.Tool
 	commands                types.Commands
-	pendingWarnings         []string
 	hooks                   *latest.HooksConfig
+
+	// warningsMu guards pendingWarnings. addToolWarning and DrainWarnings
+	// may be called concurrently from the runtime loop, the MCP server,
+	// the TUI and session manager.
+	warningsMu      sync.Mutex
+	pendingWarnings []string
 }
 
 // New creates a new agent
@@ -286,14 +292,15 @@ func (a *Agent) addToolWarning(msg string) {
 	if msg == "" {
 		return
 	}
+	a.warningsMu.Lock()
 	a.pendingWarnings = append(a.pendingWarnings, msg)
+	a.warningsMu.Unlock()
 }
 
 // DrainWarnings returns pending warnings and clears them.
 func (a *Agent) DrainWarnings() []string {
-	if len(a.pendingWarnings) == 0 {
-		return nil
-	}
+	a.warningsMu.Lock()
+	defer a.warningsMu.Unlock()
 	warnings := a.pendingWarnings
 	a.pendingWarnings = nil
 	return warnings

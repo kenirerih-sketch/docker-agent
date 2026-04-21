@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -295,4 +297,55 @@ func TestAgentNoDuplicateStartWarnings(t *testing.T) {
 	_, err = a.Tools(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, a.DrainWarnings(), "turn 3: no duplicate warning on repeated failure")
+}
+
+// TestAgentWarningsConcurrentAccess exercises the warnings queue from
+// multiple goroutines to catch regressions in locking. Run with -race to
+// actually detect a regression.
+func TestAgentWarningsConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	a := New("root", "test")
+
+	const writers = 8
+	const drainers = 4
+	const perWriter = 200
+
+	var wg sync.WaitGroup
+	wg.Add(writers + drainers)
+
+	for range writers {
+		go func() {
+			defer wg.Done()
+			for range perWriter {
+				a.addToolWarning("boom")
+			}
+		}()
+	}
+
+	stop := make(chan struct{})
+	for range drainers {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					// One final drain so we can assert a total count.
+					_ = a.DrainWarnings()
+					return
+				default:
+					_ = a.DrainWarnings()
+				}
+			}
+		}()
+	}
+
+	// Give writers a little time to finish, then signal drainers to stop.
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// A successful run means no data race and no panic; we don't assert a
+	// specific number of warnings drained because drainers run concurrently
+	// with writers.
 }

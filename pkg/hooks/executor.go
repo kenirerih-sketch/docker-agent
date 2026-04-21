@@ -281,6 +281,19 @@ func (e *Executor) executeHook(ctx context.Context, hook Hook, inputJSON []byte)
 	// Run command
 	err := cmd.Run()
 
+	// A fired timeout or parent-context cancellation surfaces as a non-nil
+	// error whose Go type varies (often *exec.ExitError with ExitCode()==-1).
+	// Normalize to a plain execution error so PreToolUse gates can fail
+	// closed rather than look at a meaningless exit code.
+	if ctxErr := timeoutCtx.Err(); ctxErr != nil {
+		reason := "cancelled"
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			reason = fmt.Sprintf("timed out after %s", hook.GetTimeout())
+		}
+		return nil, stdout.String(), stderr.String(), -1,
+			fmt.Errorf("hook %q %s: %w", hook.Command, reason, ctxErr)
+	}
+
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -318,7 +331,18 @@ func (e *Executor) aggregateResults(results []hookResult, eventType EventType) (
 
 	for _, r := range results {
 		if r.err != nil {
-			slog.Warn("Hook execution error", "error", r.err)
+			// PreToolUse is a security boundary: if a hook fails to
+			// produce a verdict (timeout, spawn failure, missing binary),
+			// deny the tool call rather than silently letting it through.
+			if eventType == EventPreToolUse {
+				slog.Warn("PreToolUse hook failed to execute; denying tool call", "error", r.err)
+				finalResult.Allowed = false
+				finalResult.ExitCode = -1
+				finalResult.Stderr = r.stderr
+				messages = append(messages, fmt.Sprintf("PreToolUse hook failed to execute: %v", r.err))
+			} else {
+				slog.Warn("Hook execution error", "error", r.err)
+			}
 			continue
 		}
 

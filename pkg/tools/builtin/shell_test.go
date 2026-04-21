@@ -249,3 +249,53 @@ func TestShellTool_DetachedBackgroundedChildDoesNotBlockReturn(t *testing.T) {
 		t.Fatal("shell tool hung when command backgrounded a detached child")
 	}
 }
+
+// TestReapSpawnedChild verifies that reapSpawnedChild both terminates a
+// running child and waits on it so no zombie is left behind. This exercises
+// the error path we take when cmd.Start() succeeded but a follow-up call
+// (e.g. createProcessGroup) failed.
+func TestReapSpawnedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-specific: relies on /bin/sh and ProcessState.Exited()")
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "sleep 60")
+	cmd.SysProcAttr = platformSpecificSysProcAttr()
+	require.NoError(t, cmd.Start())
+
+	start := time.Now()
+	reapSpawnedChild(cmd, nil)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 3*time.Second, "reapSpawnedChild should return promptly after kill")
+	require.NotNil(t, cmd.ProcessState, "ProcessState must be populated - Wait() was not called")
+	// After Wait(), ProcessState.Exited() returns false for signaled
+	// processes but the important property is that the child was reaped,
+	// which is exactly what ProcessState != nil guarantees.
+}
+
+// TestReapSpawnedChild_HandlesAlreadyExited verifies that reaping a process
+// that has already exited is a no-op (does not block, does not panic).
+func TestReapSpawnedChild_HandlesAlreadyExited(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-specific")
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	require.NoError(t, cmd.Start())
+	// Give the child a moment to exit on its own.
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		reapSpawnedChild(cmd, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reapSpawnedChild hung on an already-exited process")
+	}
+	require.NotNil(t, cmd.ProcessState, "process must have been reaped")
+}

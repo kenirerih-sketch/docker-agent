@@ -632,6 +632,72 @@ func TestExecuteHooksWithContextCancellation(t *testing.T) {
 
 	result, err := exec.ExecutePreToolUse(ctx, input)
 	require.NoError(t, err)
-	// Should be allowed because the hook timed out (non-blocking error)
+	// PreToolUse is a security boundary: when the hook fails to run to
+	// completion (here, the parent context was cancelled before the hook
+	// could report a verdict), the tool call must be denied rather than
+	// silently allowed.
+	assert.False(t, result.Allowed)
+	assert.Equal(t, -1, result.ExitCode)
+	assert.Contains(t, result.Message, "PreToolUse hook failed to execute")
+}
+
+// A hook that exits with a non-zero, non-2 code is a non-blocking error:
+// it is reported as such in the result but does not deny the tool call.
+// Pair this with TestExecuteHooksWithContextCancellation, which asserts the
+// opposite for execution failures (timeout, spawn error).
+func TestExecutePreToolUseAllowsNonBlockingExitCode(t *testing.T) {
+	t.Parallel()
+
+	config := &Config{
+		PreToolUse: []MatcherConfig{
+			{
+				Matcher: "*",
+				Hooks: []Hook{
+					{Type: HookTypeCommand, Command: "exit 1", Timeout: 5},
+				},
+			},
+		},
+	}
+
+	exec := NewExecutor(config, t.TempDir(), nil)
+	input := &Input{
+		SessionID: "test-session",
+		ToolName:  "shell",
+		ToolUseID: "test-id",
+	}
+
+	result, err := exec.ExecutePreToolUse(t.Context(), input)
+	require.NoError(t, err)
+	assert.True(t, result.Allowed)
+}
+
+func TestExecutePostToolUseDoesNotFailClosedOnError(t *testing.T) {
+	t.Parallel()
+
+	config := &Config{
+		PostToolUse: []MatcherConfig{
+			{
+				Matcher: "*",
+				Hooks: []Hook{
+					{Type: HookTypeCommand, Command: "sleep 10", Timeout: 30},
+				},
+			},
+		},
+	}
+
+	exec := NewExecutor(config, t.TempDir(), nil)
+	input := &Input{
+		SessionID: "test-session",
+		ToolName:  "shell",
+		ToolUseID: "test-id",
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	result, err := exec.ExecutePostToolUse(ctx, input)
+	require.NoError(t, err)
+	// Post-tool-use is observational only: a failed hook must not block
+	// the already-completed tool call.
 	assert.True(t, result.Allowed)
 }
