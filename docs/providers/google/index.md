@@ -133,8 +133,14 @@ models:
 You can use non-Gemini models (e.g. Claude, Llama) hosted on Google Cloud's
 [Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-partner-models)
 through the `google` provider. When a `publisher` is specified in `provider_opts`,
-requests are routed through Vertex AI's OpenAI-compatible endpoint instead of the
-Gemini SDK.
+requests are routed through the appropriate Vertex AI endpoint instead of the
+Gemini SDK:
+
+- **Anthropic Claude** (`publisher: anthropic`) uses the Anthropic-native
+  `:rawPredict` / `:streamRawPredict` endpoints. Claude models on Vertex AI do
+  not support the OpenAI `/chat/completions` path.
+- **Other publishers** (e.g. `meta`, `mistral`) use Vertex AI's
+  OpenAI-compatible `/chat/completions` endpoint.
 
 ### Authentication
 

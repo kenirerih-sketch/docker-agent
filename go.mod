@@ -75,6 +75,7 @@ require (
 )
 
 require (
+	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.23 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
@@ -85,6 +86,8 @@ require (
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/pb33f/jsonpath v0.8.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect
+	google.golang.org/api v0.252.0 // indirect
 )
 
 require (
