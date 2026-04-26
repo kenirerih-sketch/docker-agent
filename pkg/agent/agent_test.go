@@ -148,10 +148,13 @@ func TestModelOverride(t *testing.T) {
 	model := a.Model()
 	assert.Equal(t, "openai/gpt-4o", model.ID())
 	assert.False(t, a.HasModelOverride())
+	assert.Nil(t, a.ModelOverrides())
 
 	// Set an override
 	a.SetModelOverride(overrideModel)
 	assert.True(t, a.HasModelOverride())
+	require.Len(t, a.ModelOverrides(), 1)
+	assert.Equal(t, "anthropic/claude-sonnet-4-0", a.ModelOverrides()[0].ID())
 
 	// Now Model() should return the override
 	model = a.Model()
@@ -162,9 +165,23 @@ func TestModelOverride(t *testing.T) {
 	require.Len(t, configuredModels, 1)
 	assert.Equal(t, "openai/gpt-4o", configuredModels[0].ID())
 
+	// Mutating the slice returned by ModelOverrides must not affect the agent
+	snapshot := a.ModelOverrides()
+	snapshot[0] = defaultModel
+	require.Len(t, a.ModelOverrides(), 1)
+	assert.Equal(t, "anthropic/claude-sonnet-4-0", a.ModelOverrides()[0].ID())
+
+	// Save / restore round-trip using ModelOverrides
+	prev := a.ModelOverrides()
+	a.SetModelOverride(defaultModel)
+	assert.Equal(t, "openai/gpt-4o", a.Model().ID())
+	a.SetModelOverride(prev...)
+	assert.Equal(t, "anthropic/claude-sonnet-4-0", a.Model().ID())
+
 	// Clear the override
 	a.SetModelOverride(nil)
 	assert.False(t, a.HasModelOverride())
+	assert.Nil(t, a.ModelOverrides())
 
 	// Model() should return the default again
 	model = a.Model()

@@ -98,6 +98,7 @@ When asked to create a Dockerfile:
 | `name`           | Yes      | Unique skill identifier                                                     |
 | `description`    | Yes      | Short description shown to the agent for skill matching                     |
 | `context`        | No       | Set to `fork` to run the skill as an isolated sub-agent (see below)         |
+| `model`          | No       | Override the model used while running the skill as a sub-agent (fork only)  |
 | `allowed-tools`  | No       | List of tools the skill needs (YAML list or comma-separated string)         |
 | `license`        | No       | License identifier (e.g. `Apache-2.0`)                                      |
 | `compatibility`  | No       | Free-text compatibility notes                                               |
@@ -137,6 +138,37 @@ When the agent encounters a task that matches a `context: fork` skill, it uses t
   <p>Use <code>context: fork</code> for skills that involve many steps, heavy tool usage, or that should not clutter the main conversation — for example dependency bumping, large refactors, or code generation pipelines.</p>
 
 </div>
+
+### Overriding the model for a fork skill
+
+Fork skills can declare a `model` field in their frontmatter to use a
+different model than the parent agent for the duration of the sub-session.
+This is useful when a skill is best handled by a faster, cheaper, or more
+specialised model — for example a powerful reasoning model for refactors,
+or a fast model for routine bookkeeping work. The override only applies
+while the skill is running; the parent agent keeps its own model.
+
+The `model` value accepts either a named model from the agent config or
+an inline `provider/model` reference (and the same comma-separated alloy
+syntax as the rest of the agent config):
+
+<!-- yaml-lint:skip -->
+```yaml
+---
+name: bump-go-dependencies
+description: Update Go module dependencies one by one
+context: fork
+model: openai/gpt-4o-mini
+---
+
+# Bump Dependencies
+
+1. ...
+```
+
+If the model reference cannot be resolved (unknown name, missing
+credentials, runtime not configured for model switching, …) the skill
+falls back to the parent agent's default model and a warning is logged.
 
 ## Search Paths
 

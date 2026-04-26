@@ -180,6 +180,18 @@ func (a *Agent) HasModelOverride() bool {
 	return overrides != nil && len(*overrides) > 0
 }
 
+// ModelOverrides returns the currently active model override providers,
+// or nil when no override is set. The returned slice is a copy so it can
+// be safely retained by the caller (e.g. to save/restore the override
+// around a sub-session).
+func (a *Agent) ModelOverrides() []provider.Provider {
+	overrides := a.modelOverrides.Load()
+	if overrides == nil || len(*overrides) == 0 {
+		return nil
+	}
+	return append([]provider.Provider(nil), (*overrides)...)
+}
+
 // ConfiguredModels returns the originally configured models for this agent.
 // This is useful for listing available models in the TUI picker.
 func (a *Agent) ConfiguredModels() []provider.Provider {
