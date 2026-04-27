@@ -1026,8 +1026,8 @@ func trimMessages(messages []chat.Message, maxItems int) []chat.Message {
 // This is the single authoritative guard; individual provider converters do not
 // need their own whitespace-skip guards for user/system/assistant messages.
 func normalizeMessageContent(messages []chat.Message) []chat.Message {
-	out := messages[:0:0] // reuse underlying array, length 0
-	for _, msg := range messages {		// Tool results must always be forwarded — even empty — because the API
+	out := messages[:0:0]          // reuse underlying array, length 0
+	for _, msg := range messages { // Tool results must always be forwarded — even empty — because the API
 		// requires a tool_result for every preceding tool_use block.
 		if msg.Role == chat.MessageRoleTool {
 			out = append(out, msg)
