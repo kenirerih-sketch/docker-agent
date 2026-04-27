@@ -1681,6 +1681,12 @@ type HooksConfig struct {
 	// runtime to continue past its configured max_iterations limit.
 	// Observational; useful for alerting on extended-runtime sessions.
 	OnSessionResume []HookDefinition `json:"on_session_resume,omitempty" yaml:"on_session_resume,omitempty"`
+
+	// OnToolApprovalDecision hooks run after the runtime's tool
+	// approval chain resolves a verdict for a tool call. Observational;
+	// gives audit pipelines a structured "who approved what" record
+	// without re-implementing the chain.
+	OnToolApprovalDecision []HookDefinition `json:"on_tool_approval_decision,omitempty" yaml:"on_tool_approval_decision,omitempty"`
 }
 
 // IsEmpty returns true if no hooks are configured
@@ -1701,7 +1707,8 @@ func (h *HooksConfig) IsEmpty() bool {
 		len(h.OnError) == 0 &&
 		len(h.OnMaxIterations) == 0 &&
 		len(h.OnAgentSwitch) == 0 &&
-		len(h.OnSessionResume) == 0
+		len(h.OnSessionResume) == 0 &&
+		len(h.OnToolApprovalDecision) == 0
 }
 
 // HookMatcherConfig represents a hook matcher with its hooks.
@@ -1845,6 +1852,13 @@ func (h *HooksConfig) validate() error {
 	// Validate OnSessionResume hooks
 	for i, hook := range h.OnSessionResume {
 		if err := hook.validate("on_session_resume", i); err != nil {
+			return err
+		}
+	}
+
+	// Validate OnToolApprovalDecision hooks
+	for i, hook := range h.OnToolApprovalDecision {
+		if err := hook.validate("on_tool_approval_decision", i); err != nil {
 			return err
 		}
 	}

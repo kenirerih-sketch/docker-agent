@@ -162,6 +162,7 @@ func (r *LocalRuntime) executeWithApproval(
 
 	if sess.ToolsApproved {
 		slog.Debug("Tool auto-approved by --yolo flag", "tool", toolName, "session_id", sess.ID)
+		r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, ApprovalSourceYolo)
 		return invoke()
 	}
 
@@ -178,11 +179,13 @@ func (r *LocalRuntime) executeWithApproval(
 		switch pc.checker.CheckWithArgs(toolName, toolArgs) {
 		case permissions.Deny:
 			slog.Debug("Tool denied by permissions", "tool", toolName, "source", pc.source, "session_id", sess.ID)
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionDeny, denySourceFor(pc.source))
 			r.addToolErrorResponse(ctx, sess, toolCall, tool, events, a,
 				fmt.Sprintf("Tool '%s' is denied by %s.", toolName, pc.source))
 			return toolApprovalOutcome{}
 		case permissions.Allow:
 			slog.Debug("Tool auto-approved by permissions", "tool", toolName, "source", pc.source, "session_id", sess.ID)
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, allowSourceFor(pc.source))
 			return invoke()
 		case permissions.ForceAsk:
 			slog.Debug("Tool requires confirmation (ask pattern)", "tool", toolName, "source", pc.source, "session_id", sess.ID)
@@ -193,9 +196,28 @@ func (r *LocalRuntime) executeWithApproval(
 	}
 
 	if tool.Annotations.ReadOnlyHint {
+		r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, ApprovalSourceReadOnlyHint)
 		return invoke()
 	}
 	return r.askUserForConfirmation(ctx, sess, toolCall, tool, events, a, invoke)
+}
+
+// allowSourceFor maps a permission-checker source label to the
+// corresponding approval-decision source classifier. Centralised so
+// the strings stay aligned with [permissionChecker.source].
+func allowSourceFor(checkerSource string) string {
+	if checkerSource == "session permissions" {
+		return ApprovalSourceSessionPermissionsAllow
+	}
+	return ApprovalSourceTeamPermissionsAllow
+}
+
+// denySourceFor mirrors allowSourceFor for the deny path.
+func denySourceFor(checkerSource string) string {
+	if checkerSource == "session permissions" {
+		return ApprovalSourceSessionPermissionsDeny
+	}
+	return ApprovalSourceTeamPermissionsDeny
 }
 
 // permissionChecker pairs a checker with a human-readable source label.
@@ -249,10 +271,12 @@ func (r *LocalRuntime) askUserForConfirmation(
 		switch req.Type {
 		case ResumeTypeApprove:
 			slog.Debug("Resume signal received, approving tool", "tool", toolName, "session_id", sess.ID)
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, ApprovalSourceUserApproved)
 			return invoke()
 		case ResumeTypeApproveSession:
 			slog.Debug("Resume signal received, approving session", "tool", toolName, "session_id", sess.ID)
 			sess.ToolsApproved = true
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, ApprovalSourceUserApprovedSession)
 			return invoke()
 		case ResumeTypeApproveTool:
 			approvedTool := req.ToolName
@@ -266,9 +290,11 @@ func (r *LocalRuntime) askUserForConfirmation(
 				sess.Permissions.Allow = append(sess.Permissions.Allow, approvedTool)
 			}
 			slog.Debug("Resume signal received, approving tool permanently", "tool", approvedTool, "session_id", sess.ID)
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionAllow, ApprovalSourceUserApprovedTool)
 			return invoke()
 		case ResumeTypeReject:
 			slog.Debug("Resume signal received, rejecting tool", "tool", toolName, "session_id", sess.ID, "reason", req.Reason)
+			r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionDeny, ApprovalSourceUserRejected)
 			rejectMsg := "The user rejected the tool call."
 			if strings.TrimSpace(req.Reason) != "" {
 				rejectMsg += " Reason: " + strings.TrimSpace(req.Reason)
@@ -278,6 +304,7 @@ func (r *LocalRuntime) askUserForConfirmation(
 		return toolApprovalOutcome{}
 	case <-ctx.Done():
 		slog.Debug("Context cancelled while waiting for resume", "tool", toolName, "session_id", sess.ID)
+		r.executeOnToolApprovalDecisionHooks(ctx, sess, a, toolCall, ApprovalDecisionCanceled, ApprovalSourceContextCanceled)
 		r.addToolErrorResponse(ctx, sess, toolCall, tool, events, a, "The tool call was canceled by the user.")
 		return toolApprovalOutcome{canceled: true}
 	}

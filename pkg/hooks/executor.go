@@ -73,20 +73,21 @@ func compileEvents(c *Config) map[EventType][]matcher {
 		return []matcher{{hooks: hooks}}
 	}
 	return map[EventType][]matcher{
-		EventPreToolUse:      compileMatchers(c.PreToolUse),
-		EventPostToolUse:     compileMatchers(c.PostToolUse),
-		EventSessionStart:    flat(c.SessionStart),
-		EventTurnStart:       flat(c.TurnStart),
-		EventBeforeLLMCall:   flat(c.BeforeLLMCall),
-		EventAfterLLMCall:    flat(c.AfterLLMCall),
-		EventSessionEnd:      flat(c.SessionEnd),
-		EventOnUserInput:     flat(c.OnUserInput),
-		EventStop:            flat(c.Stop),
-		EventNotification:    flat(c.Notification),
-		EventOnError:         flat(c.OnError),
-		EventOnMaxIterations: flat(c.OnMaxIterations),
-		EventOnAgentSwitch:   flat(c.OnAgentSwitch),
-		EventOnSessionResume: flat(c.OnSessionResume),
+		EventPreToolUse:             compileMatchers(c.PreToolUse),
+		EventPostToolUse:            compileMatchers(c.PostToolUse),
+		EventSessionStart:           flat(c.SessionStart),
+		EventTurnStart:              flat(c.TurnStart),
+		EventBeforeLLMCall:          flat(c.BeforeLLMCall),
+		EventAfterLLMCall:           flat(c.AfterLLMCall),
+		EventSessionEnd:             flat(c.SessionEnd),
+		EventOnUserInput:            flat(c.OnUserInput),
+		EventStop:                   flat(c.Stop),
+		EventNotification:           flat(c.Notification),
+		EventOnError:                flat(c.OnError),
+		EventOnMaxIterations:        flat(c.OnMaxIterations),
+		EventOnAgentSwitch:          flat(c.OnAgentSwitch),
+		EventOnSessionResume:        flat(c.OnSessionResume),
+		EventOnToolApprovalDecision: flat(c.OnToolApprovalDecision),
 	}
 }
 

@@ -581,6 +581,13 @@
           "items": {
             "$ref": "#/definitions/HookDefinition"
           }
+        },
+        "on_tool_approval_decision": {
+          "type": "array",
+          "description": "Hooks that run after the runtime's tool approval chain (yolo / permissions / readonly / ask) resolves a verdict for a tool call, before the call is executed (allow) or its error response is recorded (deny / canceled). Receives approval_decision (\"allow\" | \"deny\" | \"canceled\") and approval_source (a stable classifier of which step decided). Observational; gives audit pipelines a single \"who approved what\" record without re-implementing the chain.",
+          "items": {
+            "$ref": "#/definitions/HookDefinition"
+          }
         }
       },
       "additionalProperties": false

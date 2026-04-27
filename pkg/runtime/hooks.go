@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker-agent/pkg/hooks"
 	"github.com/docker/docker-agent/pkg/hooks/builtins"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tools"
 )
 
 // buildHooksExecutors builds a [hooks.Executor] for every agent in the
@@ -213,6 +214,46 @@ func (r *LocalRuntime) executeOnSessionResumeHooks(ctx context.Context, a *agent
 		PreviousMaxIterations: prevMax,
 		NewMaxIterations:      newMax,
 	}, nil)
+}
+
+// Verdicts and sources for [hooks.EventOnToolApprovalDecision]. Constants
+// instead of literals so the contract between executeWithApproval and
+// the hook protocol is discoverable from the runtime side and a typo
+// trips a compile error.
+const (
+	ApprovalDecisionAllow    = "allow"
+	ApprovalDecisionDeny     = "deny"
+	ApprovalDecisionCanceled = "canceled"
+
+	ApprovalSourceYolo                    = "yolo"
+	ApprovalSourceSessionPermissionsAllow = "session_permissions_allow"
+	ApprovalSourceSessionPermissionsDeny  = "session_permissions_deny"
+	ApprovalSourceTeamPermissionsAllow    = "team_permissions_allow"
+	ApprovalSourceTeamPermissionsDeny     = "team_permissions_deny"
+	ApprovalSourceReadOnlyHint            = "readonly_hint"
+	ApprovalSourceUserApproved            = "user_approved"
+	ApprovalSourceUserApprovedSession     = "user_approved_session"
+	ApprovalSourceUserApprovedTool        = "user_approved_tool"
+	ApprovalSourceUserRejected            = "user_rejected"
+	ApprovalSourceContextCanceled         = "context_canceled"
+)
+
+// executeOnToolApprovalDecisionHooks fires on_tool_approval_decision
+// after the runtime's approval chain has resolved a verdict for a
+// tool call. Fired once per call from each return path of
+// [executeWithApproval], so a single hook gets one record per tool
+// call regardless of which step decided.
+func (r *LocalRuntime) executeOnToolApprovalDecisionHooks(
+	ctx context.Context,
+	sess *session.Session,
+	a *agent.Agent,
+	toolCall tools.ToolCall,
+	decision, source string,
+) {
+	input := newHooksInput(sess, toolCall)
+	input.ApprovalDecision = decision
+	input.ApprovalSource = source
+	r.dispatchHook(ctx, a, hooks.EventOnToolApprovalDecision, input, nil)
 }
 
 // executeBeforeLLMCallHooks fires before_llm_call just before each

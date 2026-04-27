@@ -58,6 +58,13 @@ const (
 	// Observational; useful for alerting on extended-runtime sessions
 	// or for pipelines that bill / quota-track per resume.
 	EventOnSessionResume EventType = "on_session_resume"
+	// EventOnToolApprovalDecision fires after the runtime's tool
+	// approval chain (yolo / permissions / readonly / ask) has resolved
+	// a verdict for a tool call, before the call is executed (for
+	// allow) or its error response is recorded (for deny / canceled).
+	// Observational; gives audit pipelines a single, structured "who
+	// approved what" record without re-implementing the chain.
+	EventOnToolApprovalDecision EventType = "on_tool_approval_decision"
 )
 
 // consumesContext reports whether the runtime emit site for e routes
@@ -113,6 +120,16 @@ type Input struct {
 	// reconstructing it from the iteration counter.
 	PreviousMaxIterations int `json:"previous_max_iterations,omitempty"`
 	NewMaxIterations      int `json:"new_max_iterations,omitempty"`
+
+	// OnToolApprovalDecision specific: the verdict resolved by the
+	// approval chain ("allow", "deny", "canceled") and a stable
+	// classifier for what produced it ("yolo",
+	// "session_permissions_allow", "session_permissions_deny",
+	// "team_permissions_allow", "team_permissions_deny",
+	// "readonly_hint", "user_approved", "user_approved_session",
+	// "user_approved_tool", "user_rejected", "context_canceled").
+	ApprovalDecision string `json:"approval_decision,omitempty"`
+	ApprovalSource   string `json:"approval_source,omitempty"`
 }
 
 // ToJSON serializes the input.
