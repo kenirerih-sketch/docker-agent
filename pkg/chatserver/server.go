@@ -78,6 +78,12 @@ type Options struct {
 	// before it's evicted. Zero means use the package default
 	// (30 minutes).
 	ConversationTTL time.Duration
+	// MaxIdleRuntimes bounds the number of idle runtimes pooled per
+	// agent. Building a runtime resolves tools and sets up channels;
+	// keeping a small pool of warm runtimes avoids paying that cost on
+	// every request. Zero disables pooling (a fresh runtime is built
+	// for every request, the original behaviour).
+	MaxIdleRuntimes int
 }
 
 const (
@@ -109,7 +115,12 @@ func Run(ctx context.Context, agentFilename string, opts Options, ln net.Listene
 	}
 
 	httpServer := &http.Server{
-		Handler:           newRouter(&server{team: t, policy: policy, conversations: newConversationStore(opts.ConversationsMaxSessions, conversationTTL(opts))}, opts),
+		Handler: newRouter(&server{
+			team:          t,
+			policy:        policy,
+			conversations: newConversationStore(opts.ConversationsMaxSessions, conversationTTL(opts)),
+			runtimes:      newRuntimePool(t, opts.MaxIdleRuntimes),
+		}, opts),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	return serve(ctx, httpServer, ln)
@@ -161,6 +172,7 @@ type server struct {
 	team          *team.Team
 	policy        agentPolicy
 	conversations *conversationStore
+	runtimes      *runtimePool
 }
 
 func newRouter(s *server, opts Options) http.Handler {
@@ -260,10 +272,11 @@ func (s *server) handleChatCompletions(c echo.Context) error {
 	}
 
 	agentName := s.policy.pick(req.Model)
-	rt, err := runtime.New(s.team, runtime.WithCurrentAgent(agentName))
+	rt, err := s.runtimes.Get(agentName)
 	if err != nil {
-		return writeError(c, http.StatusInternalServerError, fmt.Sprintf("failed to create runtime: %v", err))
+		return writeError(c, http.StatusInternalServerError, fmt.Sprintf("failed to acquire runtime: %v", err))
 	}
+	defer s.runtimes.Put(agentName, rt)
 
 	// Echo back the requested model verbatim when set, so clients matching
 	// on the model field stay happy. Otherwise expose the actual agent.
@@ -339,7 +352,11 @@ func (s *server) chatCompletion(c echo.Context, rt runtime.Runtime, sess *sessio
 
 // streamChatCompletion runs the agent and streams its response back to the
 // client as Server-Sent Events in OpenAI's chat.completion.chunk format.
-func (s *server) streamChatCompletion(c echo.Context, rt runtime.Runtime, sess *session.Session, model string) error {
+//
+// The error return is reserved for future use (e.g. surfacing a write
+// failure to the request logger). Today every error is converted into an
+// in-band SSE error event, so the function always returns nil.
+func (s *server) streamChatCompletion(c echo.Context, rt runtime.Runtime, sess *session.Session, model string) error { //nolint:unparam // see comment
 	stream := newSSEStream(c.Response(), newChatID(), model)
 
 	// Initial "role: assistant" delta so clients can start rendering.

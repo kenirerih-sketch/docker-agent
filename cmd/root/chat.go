@@ -22,6 +22,7 @@ type chatFlags struct {
 	requestTimeout        time.Duration
 	conversationsMaxItems int
 	conversationTTL       time.Duration
+	maxIdleRuntimes       int
 	runConfig             config.RuntimeConfig
 }
 
@@ -51,6 +52,7 @@ agent without any custom integration.`,
 	cmd.Flags().DurationVar(&flags.requestTimeout, "request-timeout", 5*time.Minute, "Per-request timeout (covers model + tool calls + streaming)")
 	cmd.Flags().IntVar(&flags.conversationsMaxItems, "conversations-max", 0, "Cache up to N conversations server-side, keyed by X-Conversation-Id (0 disables; clients must resend full history)")
 	cmd.Flags().DurationVar(&flags.conversationTTL, "conversation-ttl", 30*time.Minute, "Idle TTL after which a cached conversation is evicted")
+	cmd.Flags().IntVar(&flags.maxIdleRuntimes, "max-idle-runtimes", 4, "Maximum number of idle runtimes pooled per agent (0 disables pooling)")
 	addRuntimeConfigFlags(cmd, &flags.runConfig)
 
 	return cmd
@@ -91,5 +93,6 @@ func (f *chatFlags) runChatCommand(cmd *cobra.Command, args []string) (commandEr
 		RequestTimeout:           f.requestTimeout,
 		ConversationsMaxSessions: f.conversationsMaxItems,
 		ConversationTTL:          f.conversationTTL,
+		MaxIdleRuntimes:          f.maxIdleRuntimes,
 	}, ln)
 }
