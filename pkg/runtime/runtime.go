@@ -206,6 +206,12 @@ type LocalRuntime struct {
 	// touching any process-wide state.
 	hooksRegistry *hooks.Registry
 
+	// builtinsState holds per-session state for the stateful builtins
+	// (loop_detector, max_iterations). The runtime calls
+	// builtinsState.ClearSession from session_end so a long-running
+	// runtime serving many sessions stays bounded.
+	builtinsState *builtins.State
+
 	// hooksExecByAgent holds the per-agent [hooks.Executor], keyed by
 	// agent name. Built once in [NewLocalRuntime.buildHooksExecutors]
 	// after team and runtime config are finalized; agents with no hooks
@@ -334,7 +340,8 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	}
 
 	hooksRegistry := hooks.NewRegistry()
-	if err := builtins.Register(hooksRegistry); err != nil {
+	builtinsState, err := builtins.Register(hooksRegistry)
+	if err != nil {
 		return nil, fmt.Errorf("register builtin hooks: %w", err)
 	}
 
@@ -351,6 +358,7 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 		sessionStore:         session.NewInMemorySessionStore(),
 		fallbackCooldowns:    make(map[string]*fallbackCooldownState),
 		hooksRegistry:        hooksRegistry,
+		builtinsState:        builtinsState,
 	}
 	r.bgAgents = agenttool.NewHandler(r)
 

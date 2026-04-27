@@ -22,7 +22,6 @@ import (
 	"github.com/docker/docker-agent/pkg/telemetry"
 	"github.com/docker/docker-agent/pkg/tools"
 	"github.com/docker/docker-agent/pkg/tools/builtin"
-	bgagent "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 )
 
 // registerDefaultTools wires up the built-in tool handlers (delegation,
@@ -104,6 +103,26 @@ func appendNewlineToQueuedMessage(sm QueuedMessage) QueuedMessage {
 	parts[last].Text += "\n"
 	sm.MultiContent = parts
 	return sm
+}
+
+// emitHookDrivenShutdown fans out the standard Error /
+// notification(level=error) / on_error stanzas when a hook
+// (post_tool_use or before_llm_call) signals run termination.
+func (r *LocalRuntime) emitHookDrivenShutdown(
+	ctx context.Context,
+	a *agent.Agent,
+	sess *session.Session,
+	message string,
+	events chan Event,
+) {
+	if message == "" {
+		// aggregate() always populates Result.Message on a deny
+		// verdict; the fallback covers any future hook that returns
+		// block without a reason.
+		message = "Agent terminated by a hook."
+	}
+	events <- Error(message)
+	r.notifyError(ctx, a, sess.ID, message)
 }
 
 // finalizeEventChannel performs cleanup at the end of a RunStream goroutine:
@@ -191,21 +210,6 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 		iteration := 0
 		// Use a runtime copy of maxIterations so we don't modify the session's persistent config
 		runtimeMaxIterations := sess.MaxIterations
-
-		// Initialize consecutive duplicate tool call detector
-		//
-		// Polling tools (view_background_agent, view_background_job) are
-		// expected to be called repeatedly with identical arguments while a
-		// background task is in progress. Exempt them so they never trigger
-		// the loop-termination path.
-		loopThreshold := sess.MaxConsecutiveToolCalls
-		if loopThreshold == 0 {
-			loopThreshold = 5 // default: always active
-		}
-		loopDetector := newToolLoopDetector(loopThreshold,
-			bgagent.ToolNameViewBackgroundAgent,
-			builtin.ToolNameViewBackgroundJob,
-		)
 
 		// overflowCompactions counts how many consecutive context-overflow
 		// auto-compactions have been attempted without a successful model
@@ -388,9 +392,28 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			}
 
 			// before_llm_call hooks fire just before the model is invoked.
-			// They are observational only (no deny semantics today); use
-			// turn_start to contribute system messages.
-			r.executeBeforeLLMCallHooks(ctx, sess, a)
+			// A terminating verdict (e.g. from the max_iterations builtin)
+			// stops the run loop here, before any tokens are spent on the
+			// model call. Use turn_start to contribute system messages;
+			// this event's AdditionalContext is intentionally not consumed.
+			if stop, msg := r.executeBeforeLLMCallHooks(ctx, sess, a); stop {
+				slog.Warn("before_llm_call hook signalled run termination",
+					"agent", a.Name(), "session_id", sess.ID, "reason", msg)
+				r.emitHookDrivenShutdown(ctx, a, sess, msg, events)
+				streamSpan.End()
+				return
+			}
+
+			// before_llm_call hooks fire just before the model is invoked.
+			// A terminating verdict (e.g. from the max_iterations builtin)
+			// stops the run loop here, before any tokens are spent.
+			if stop, msg := r.executeBeforeLLMCallHooks(ctx, sess, a); stop {
+				slog.Warn("before_llm_call hook signalled run termination",
+					"agent", a.Name(), "session_id", sess.ID, "reason", msg)
+				r.emitHookDrivenShutdown(ctx, a, sess, msg, events)
+				streamSpan.End()
+				return
+			}
 
 			// Try primary model with fallback chain if configured
 			res, usedModel, err := r.tryModelWithFallback(streamCtx, a, model, messages, agentTools, sess, m, events)
@@ -474,7 +497,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			// measure how much content was added by tool results.
 			messageCountBeforeTools := len(sess.GetAllMessages())
 
-			r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
+			stopRun, stopMsg := r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
 
 			// Re-probe toolsets after tool calls: an install/setup tool call may
 			// have made a previously-unavailable LSP or MCP connectable. reprobe()
@@ -490,22 +513,13 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 				r.reprobe(ctx, sess, a, agentTools, sessionSpan, events)
 			}
 
-			// Check for degenerate tool call loops
-			if loopDetector.record(res.Calls) {
-				toolName := "unknown"
-				if len(res.Calls) > 0 {
-					toolName = res.Calls[0].Function.Name
-				}
-				slog.Warn("Repetitive tool call loop detected",
-					"agent", a.Name(), "tool", toolName,
-					"consecutive", loopDetector.consecutive, "session_id", sess.ID)
-				errMsg := fmt.Sprintf(
-					"Agent terminated: detected %d consecutive identical calls to %s. "+
-						"This indicates a degenerate loop where the model is not making progress.",
-					loopDetector.consecutive, toolName)
-				events <- Error(errMsg)
-				r.notifyError(ctx, a, sess.ID, errMsg)
-				loopDetector.reset()
+			// post_tool_use hook signalled run termination (e.g. from
+			// the loop_detector builtin). Same fan-out as the inline
+			// tool-loop detector users have always seen.
+			if stopRun {
+				slog.Warn("post_tool_use hook signalled run termination",
+					"agent", a.Name(), "session_id", sess.ID, "reason", stopMsg)
+				r.emitHookDrivenShutdown(ctx, a, sess, stopMsg, events)
 				return
 			}
 

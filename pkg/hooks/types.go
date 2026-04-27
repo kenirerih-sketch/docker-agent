@@ -16,14 +16,24 @@ const (
 	// EventPreToolUse fires before a tool call. Can allow/deny/modify it.
 	EventPreToolUse EventType = "pre_tool_use"
 	// EventPostToolUse fires after a tool completes successfully.
+	// Returning decision="block" (or continue=false / exit code 2) stops
+	// the agent's run loop after the current tool batch finishes — useful
+	// for circuit-breaker patterns like a tool-call loop detector. The
+	// runtime emits the [Result.Message] as an Error event and fires
+	// notification / on_error before exiting.
 	EventPostToolUse EventType = "post_tool_use"
 	// EventSessionStart fires when a session begins or resumes.
 	EventSessionStart EventType = "session_start"
 	// EventTurnStart fires at the start of every agent turn (each model
 	// call). AdditionalContext is injected transiently and never persisted.
 	EventTurnStart EventType = "turn_start"
-	// EventBeforeLLMCall fires immediately before each model call. Output
-	// is informational; use turn_start to contribute system messages.
+	// EventBeforeLLMCall fires immediately before each model call.
+	// Returning decision="block" (or continue=false / exit code 2) stops
+	// the agent's run loop before the model is invoked — useful for hard
+	// budget guards like a max-iterations builtin. The runtime emits the
+	// [Result.Message] as an Error event and fires notification / on_error
+	// before exiting. Use turn_start to contribute system messages; this
+	// event's AdditionalContext is not consumed.
 	EventBeforeLLMCall EventType = "before_llm_call"
 	// EventAfterLLMCall fires immediately after a successful model call,
 	// before the response is recorded. Failed calls fire EventOnError.
@@ -170,6 +180,7 @@ type Output struct {
 	// SystemMessage is a warning to show the user.
 	SystemMessage string `json:"system_message,omitempty"`
 	// Decision is for blocking operations ("block", ...).
+	// See [DecisionBlockValue] for the canonical "block" string.
 	Decision string `json:"decision,omitempty"`
 	// Reason explains the decision.
 	Reason string `json:"reason,omitempty"`
@@ -180,8 +191,14 @@ type Output struct {
 // ShouldContinue reports whether execution should continue.
 func (o *Output) ShouldContinue() bool { return o.Continue == nil || *o.Continue }
 
+// DecisionBlockValue is the canonical value of [Output.Decision] used
+// by hooks to signal a deny/terminate verdict on the current event.
+// In-process builtin hooks should set Decision to this constant rather
+// than the bare string literal.
+const DecisionBlockValue = "block"
+
 // IsBlocked reports whether the decision is "block".
-func (o *Output) IsBlocked() bool { return o.Decision == "block" }
+func (o *Output) IsBlocked() bool { return o.Decision == DecisionBlockValue }
 
 // HookSpecificOutput holds event-specific output fields.
 type HookSpecificOutput struct {

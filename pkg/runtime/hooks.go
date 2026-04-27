@@ -9,13 +9,24 @@ import (
 	"github.com/docker/docker-agent/pkg/hooks"
 	"github.com/docker/docker-agent/pkg/hooks/builtins"
 	"github.com/docker/docker-agent/pkg/session"
+	"github.com/docker/docker-agent/pkg/tools/builtin"
+	bgagent "github.com/docker/docker-agent/pkg/tools/builtin/agent"
 )
+
+// loopDetectorExemptTools lists polling-style tools the auto-injected
+// loop_detector must ignore: they're called repeatedly with identical
+// arguments while a background task is in progress, which would
+// otherwise look like a degenerate loop.
+var loopDetectorExemptTools = []string{
+	bgagent.ToolNameViewBackgroundAgent,
+	builtin.ToolNameViewBackgroundJob,
+}
 
 // buildHooksExecutors builds a [hooks.Executor] for every agent in the
 // team that has user-configured hooks or an agent-flag that maps to a
-// builtin (AddDate / AddEnvironmentInfo / AddPromptFiles). Agents with
-// no hooks have no entry; lookups fall through to nil so callers can
-// short-circuit cheaply.
+// builtin (AddDate / AddEnvironmentInfo / AddPromptFiles), plus the
+// always-on loop_detector. Agents with no hooks at all have no entry;
+// lookups fall through to nil so callers can short-circuit cheaply.
 //
 // Called once from [NewLocalRuntime] after r.workingDir, r.env and
 // r.hooksRegistry are finalized; the resulting map is read-only for
@@ -28,10 +39,19 @@ func (r *LocalRuntime) buildHooksExecutors() {
 		if err != nil {
 			continue
 		}
+		// Loop detection is always-on, defaulting to a threshold of 5
+		// when the agent didn't set MaxConsecutiveToolCalls. This
+		// matches the historical contract of the inline detector.
+		maxConsecutive := a.MaxConsecutiveToolCalls()
+		if maxConsecutive <= 0 {
+			maxConsecutive = 5
+		}
 		cfg := builtins.ApplyAgentDefaults(hooks.FromConfig(a.Hooks()), builtins.AgentDefaults{
-			AddDate:            a.AddDate(),
-			AddEnvironmentInfo: a.AddEnvironmentInfo(),
-			AddPromptFiles:     a.AddPromptFiles(),
+			AddDate:                 a.AddDate(),
+			AddEnvironmentInfo:      a.AddEnvironmentInfo(),
+			AddPromptFiles:          a.AddPromptFiles(),
+			MaxConsecutiveToolCalls: maxConsecutive,
+			ExemptLoopTools:         loopDetectorExemptTools,
 		})
 		if cfg == nil {
 			continue
@@ -128,12 +148,14 @@ func contextMessages(result *hooks.Result) []chat.Message {
 }
 
 // executeSessionEndHooks fires session_end when the run loop exits
-// (stream closed, context done, ...).
+// and clears any per-session state held by stateful builtins so a
+// long-running runtime stays bounded.
 func (r *LocalRuntime) executeSessionEndHooks(ctx context.Context, sess *session.Session, a *agent.Agent) {
 	r.dispatchHook(ctx, a, hooks.EventSessionEnd, &hooks.Input{
 		SessionID: sess.ID,
 		Reason:    "stream_ended",
 	}, nil)
+	r.builtinsState.ClearSession(sess.ID)
 }
 
 // executeStopHooks fires stop hooks when the model finishes responding,
@@ -176,14 +198,18 @@ func (r *LocalRuntime) notify(ctx context.Context, a *agent.Agent, event hooks.E
 }
 
 // executeBeforeLLMCallHooks fires before_llm_call just before each
-// model call. The output is informational (not honored as a deny
-// verdict yet), making this the right event for cost guardrails,
-// auditing, and observability. Hooks that want to contribute system
-// messages should use turn_start instead.
-func (r *LocalRuntime) executeBeforeLLMCallHooks(ctx context.Context, sess *session.Session, a *agent.Agent) {
-	r.dispatchHook(ctx, a, hooks.EventBeforeLLMCall, &hooks.Input{
+// model call. A terminating verdict (decision="block" / continue=false
+// / exit 2) stops the run loop — see [hooks.EventBeforeLLMCall] for
+// the contract. Hooks that just want to contribute system messages
+// should target turn_start instead.
+func (r *LocalRuntime) executeBeforeLLMCallHooks(ctx context.Context, sess *session.Session, a *agent.Agent) (stop bool, message string) {
+	result := r.dispatchHook(ctx, a, hooks.EventBeforeLLMCall, &hooks.Input{
 		SessionID: sess.ID,
 	}, nil)
+	if result == nil || result.Allowed {
+		return false, ""
+	}
+	return true, result.Message
 }
 
 // executeAfterLLMCallHooks fires after_llm_call after a successful

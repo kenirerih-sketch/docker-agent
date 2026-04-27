@@ -24,8 +24,15 @@ import (
 	"github.com/docker/docker-agent/pkg/tools"
 )
 
-// processToolCalls handles the execution of tool calls for an agent
-func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events chan Event) {
+// processToolCalls handles the execution of tool calls for an agent.
+//
+// Returns (stopRun, message) when a post_tool_use hook signalled a
+// terminating verdict during this batch; the run loop fans out the
+// standard Error / notification / on_error stanzas before exiting.
+// (false, "") in every other path — including user cancellation, which
+// halts the *batch* but keeps the loop alive so the synthesised tool
+// error responses can be sent back to the model on the next turn.
+func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Session, calls []tools.ToolCall, agentTools []tools.Tool, events chan Event) (stopRun bool, stopMessage string) {
 	a := r.resolveSessionAgent(sess)
 	slog.Debug("Processing tool calls", "agent", a.Name(), "call_count", len(calls))
 
@@ -62,16 +69,23 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 
 		// Pick the handler: runtime-managed tools (transfer_task, handoff)
 		// have dedicated handlers; everything else goes through the toolset.
-		var runTool func()
+		// Runtime-managed tools don't run pre/post hooks, so they always
+		// return (false, "") for the stop signal.
+		var runTool func() (stop bool, message string)
 		if handler, exists := r.toolMap[toolCall.Function.Name]; exists {
-			runTool = func() { r.runAgentTool(callCtx, handler, sess, toolCall, tool, events, a) }
+			runTool = func() (bool, string) {
+				r.runAgentTool(callCtx, handler, sess, toolCall, tool, events, a)
+				return false, ""
+			}
 		} else {
-			runTool = func() { r.runTool(callCtx, tool, toolCall, events, sess, a) }
+			runTool = func() (bool, string) {
+				return r.runTool(callCtx, tool, toolCall, events, sess, a)
+			}
 		}
 
 		// Execute tool with approval check
-		canceled := r.executeWithApproval(callCtx, sess, toolCall, tool, events, a, runTool)
-		if canceled {
+		outcome := r.executeWithApproval(callCtx, sess, toolCall, tool, events, a, runTool)
+		if outcome.canceled {
 			callSpan.SetStatus(codes.Ok, "tool call canceled by user")
 			callSpan.End()
 
@@ -82,16 +96,42 @@ func (r *LocalRuntime) processToolCalls(ctx context.Context, sess *session.Sessi
 				remainingTool := agentToolMap[remaining.Function.Name]
 				r.addToolErrorResponse(ctx, sess, remaining, remainingTool, events, a, "The tool call was canceled because a previous tool call in the same batch was canceled by the user.")
 			}
-			return
+			return false, ""
 		}
 
 		callSpan.SetStatus(codes.Ok, "tool call processed")
 		callSpan.End()
+
+		// Post-tool hook signalled run termination. Synthesize error
+		// responses for the remaining batch (same reason as user
+		// cancellation: orphan function calls are rejected by the API)
+		// and propagate the stop signal to the run loop.
+		if outcome.stopRun {
+			for _, remaining := range calls[i+1:] {
+				remainingTool := agentToolMap[remaining.Function.Name]
+				r.addToolErrorResponse(ctx, sess, remaining, remainingTool, events, a,
+					"The tool call was skipped because a post_tool_use hook signalled run termination.")
+			}
+			return true, outcome.stopMessage
+		}
 	}
+	return false, ""
+}
+
+// toolApprovalOutcome carries the verdicts of [LocalRuntime.executeWithApproval].
+// canceled and stopRun are mutually exclusive in practice but the loop treats
+// them differently: cancellation halts the current batch silently, while a
+// stopRun also terminates the agent's run loop with a user-visible reason.
+type toolApprovalOutcome struct {
+	canceled    bool
+	stopRun     bool
+	stopMessage string
 }
 
 // executeWithApproval handles the tool approval flow and executes the tool.
-// Returns true if the operation was canceled and processing should stop.
+// Returns a [toolApprovalOutcome] describing whether the tool ran, was
+// canceled by the user, or was followed by a post_tool_use hook that
+// signalled run termination.
 //
 // The approval flow considers (in order):
 //
@@ -107,15 +147,15 @@ func (r *LocalRuntime) executeWithApproval(
 	tool tools.Tool,
 	events chan Event,
 	a *agent.Agent,
-	runTool func(),
-) (canceled bool) {
+	runTool func() (stop bool, message string),
+) toolApprovalOutcome {
 	toolName := toolCall.Function.Name
 
 	// --yolo flag takes absolute precedence: auto-approve everything.
 	if sess.ToolsApproved {
 		slog.Debug("Tool auto-approved by --yolo flag", "tool", toolName, "session_id", sess.ID)
-		runTool()
-		return false
+		stop, msg := runTool()
+		return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 	}
 
 	// Parse tool arguments once for permission matching
@@ -135,11 +175,11 @@ func (r *LocalRuntime) executeWithApproval(
 		case permissions.Deny:
 			slog.Debug("Tool denied by permissions", "tool", toolName, "source", pc.source, "session_id", sess.ID)
 			r.addToolErrorResponse(ctx, sess, toolCall, tool, events, a, fmt.Sprintf("Tool '%s' is denied by %s.", toolName, pc.source))
-			return false
+			return toolApprovalOutcome{}
 		case permissions.Allow:
 			slog.Debug("Tool auto-approved by permissions", "tool", toolName, "source", pc.source, "session_id", sess.ID)
-			runTool()
-			return false
+			stop, msg := runTool()
+			return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 		case permissions.ForceAsk:
 			slog.Debug("Tool requires confirmation (ask pattern)", "tool", toolName, "source", pc.source, "session_id", sess.ID)
 			return r.askUserForConfirmation(ctx, sess, toolCall, tool, events, a, runTool)
@@ -150,8 +190,8 @@ func (r *LocalRuntime) executeWithApproval(
 
 	// No permission rule matched. Auto-approve if the tool is read-only.
 	if tool.Annotations.ReadOnlyHint {
-		runTool()
-		return false
+		stop, msg := runTool()
+		return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 	}
 
 	// Default: ask the user for confirmation
@@ -195,8 +235,8 @@ func (r *LocalRuntime) askUserForConfirmation(
 	tool tools.Tool,
 	events chan Event,
 	a *agent.Agent,
-	runTool func(),
-) (canceled bool) {
+	runTool func() (stop bool, message string),
+) toolApprovalOutcome {
 	toolName := toolCall.Function.Name
 	slog.Debug("Tools not approved, waiting for resume", "tool", toolName, "session_id", sess.ID)
 	events <- ToolCallConfirmation(toolCall, tool, a.Name())
@@ -208,11 +248,13 @@ func (r *LocalRuntime) askUserForConfirmation(
 		switch req.Type {
 		case ResumeTypeApprove:
 			slog.Debug("Resume signal received, approving tool", "tool", toolName, "session_id", sess.ID)
-			runTool()
+			stop, msg := runTool()
+			return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 		case ResumeTypeApproveSession:
 			slog.Debug("Resume signal received, approving session", "tool", toolName, "session_id", sess.ID)
 			sess.ToolsApproved = true
-			runTool()
+			stop, msg := runTool()
+			return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 		case ResumeTypeApproveTool:
 			// Add the tool to session's allow list for future auto-approval
 			approvedTool := req.ToolName
@@ -226,7 +268,8 @@ func (r *LocalRuntime) askUserForConfirmation(
 				sess.Permissions.Allow = append(sess.Permissions.Allow, approvedTool)
 			}
 			slog.Debug("Resume signal received, approving tool permanently", "tool", approvedTool, "session_id", sess.ID)
-			runTool()
+			stop, msg := runTool()
+			return toolApprovalOutcome{stopRun: stop, stopMessage: msg}
 		case ResumeTypeReject:
 			slog.Debug("Resume signal received, rejecting tool", "tool", toolName, "session_id", sess.ID, "reason", req.Reason)
 			rejectMsg := "The user rejected the tool call."
@@ -235,11 +278,11 @@ func (r *LocalRuntime) askUserForConfirmation(
 			}
 			r.addToolErrorResponse(ctx, sess, toolCall, tool, events, a, rejectMsg)
 		}
-		return false
+		return toolApprovalOutcome{}
 	case <-ctx.Done():
 		slog.Debug("Context cancelled while waiting for resume", "tool", toolName, "session_id", sess.ID)
 		r.addToolErrorResponse(ctx, sess, toolCall, tool, events, a, "The tool call was canceled by the user.")
-		return true
+		return toolApprovalOutcome{canceled: true}
 	}
 }
 
@@ -325,11 +368,13 @@ func (r *LocalRuntime) executeToolWithHandler(
 }
 
 // runTool executes agent tools from toolsets (MCP, filesystem, etc.).
-func (r *LocalRuntime) runTool(ctx context.Context, tool tools.Tool, toolCall tools.ToolCall, events chan Event, sess *session.Session, a *agent.Agent) {
+// Returns (stopRun, message) when post_tool_use signalled a terminating
+// verdict; otherwise (false, "").
+func (r *LocalRuntime) runTool(ctx context.Context, tool tools.Tool, toolCall tools.ToolCall, events chan Event, sess *session.Session, a *agent.Agent) (stopRun bool, message string) {
 	// Pre-tool hook: may block the call or rewrite its arguments.
 	blocked, toolCall := r.executePreToolHook(ctx, sess, toolCall, tool, events, a)
 	if blocked {
-		return
+		return false, ""
 	}
 
 	r.executeToolWithHandler(ctx, toolCall, tool, events, sess, a, "runtime.tool.handler",
@@ -338,8 +383,11 @@ func (r *LocalRuntime) runTool(ctx context.Context, tool tools.Tool, toolCall to
 			return res, 0, err
 		})
 
-	// Post-tool hook: observational; SystemMessage is emitted by dispatchHook.
-	r.executePostToolHook(ctx, sess, toolCall, a, events)
+	// Post-tool hook: SystemMessage is emitted by dispatchHook. A
+	// terminating verdict is propagated up to processToolCalls so the
+	// run loop can fan out the standard Error / notification / on_error
+	// stanzas before exiting.
+	return r.executePostToolHook(ctx, sess, toolCall, a, events)
 }
 
 // newHooksInput builds a hooks.Input from the common tool-call fields.
@@ -391,15 +439,27 @@ func (r *LocalRuntime) executePreToolHook(
 }
 
 // executePostToolHook runs the post-tool-use hook. SystemMessage is
-// emitted as a Warning by [dispatchHook].
+// emitted as a Warning by [dispatchHook]. When the hook returns a
+// terminating verdict (decision="block" / continue=false / exit 2)
+// the runtime stops the run loop after the current tool batch — see
+// [LocalRuntime.processToolCalls] for the propagation, and the
+// [hooks.EventPostToolUse] documentation for the contract.
+//
+// Returns (stop, message): stop is true when the run loop should
+// terminate; message carries the user-visible reason aggregated from
+// the hook's [hooks.Result.Message].
 func (r *LocalRuntime) executePostToolHook(
 	ctx context.Context,
 	sess *session.Session,
 	toolCall tools.ToolCall,
 	a *agent.Agent,
 	events chan Event,
-) {
-	r.dispatchHook(ctx, a, hooks.EventPostToolUse, newHooksInput(sess, toolCall), events)
+) (stop bool, message string) {
+	result := r.dispatchHook(ctx, a, hooks.EventPostToolUse, newHooksInput(sess, toolCall), events)
+	if result == nil || result.Allowed {
+		return false, ""
+	}
+	return true, result.Message
 }
 
 // parseToolInput parses tool arguments JSON into a map
