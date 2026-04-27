@@ -62,7 +62,7 @@ func newDefaultRegistry() *Registry {
 
 	// Define tool registrations declaratively.
 	// Tools with the same visual representation share a builder.
-	registry.RegisterAll([]Registration{
+	registry.Register([]Registration{
 		{[]string{builtin.ToolNameTransferTask}, transfertask.New},
 		{[]string{builtin.ToolNameHandoff}, handoff.New},
 		{[]string{builtin.ToolNameEditFile}, editfile.New},

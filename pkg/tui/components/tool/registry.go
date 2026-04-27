@@ -33,16 +33,9 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds a single tool-to-builder mapping.
-func (r *Registry) Register(toolName string, builder ComponentBuilder) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.builders[toolName] = builder
-}
-
-// RegisterAll adds multiple registrations at once.
-// This is the preferred way to set up the registry declaratively.
-func (r *Registry) RegisterAll(registrations []Registration) {
+// Register adds multiple registrations at once.
+// Tools with the same visual representation share a builder.
+func (r *Registry) Register(registrations []Registration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, reg := range registrations {

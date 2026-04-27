@@ -235,9 +235,6 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
-	case reasoningblock.BlockMsg:
-		return m.forwardToReasoningBlock(msg.GetBlockID(), msg)
-
 	case animation.TickMsg:
 		// Invalidate render cache if there's animated content that needs redrawing.
 		// This ensures fades, spinners, etc. actually update visually on each tick.
@@ -1091,21 +1088,6 @@ func (m *model) invalidateAllItems() {
 	m.renderedLines = nil
 	m.totalHeight = 0
 	m.renderDirty = true
-}
-
-// forwardToReasoningBlock finds the reasoning block with the given ID and forwards the message to it.
-func (m *model) forwardToReasoningBlock(blockID string, msg tea.Msg) (layout.Model, tea.Cmd) {
-	for i, tuiMsg := range m.messages {
-		if tuiMsg.Type == types.MessageTypeAssistantReasoningBlock {
-			if block, ok := m.views[i].(*reasoningblock.Model); ok && block.ID() == blockID {
-				updatedView, cmd := m.views[i].Update(msg)
-				m.views[i] = updatedView
-				m.invalidateItem(i)
-				return m, cmd
-			}
-		}
-	}
-	return m, nil
 }
 
 // Message management methods
