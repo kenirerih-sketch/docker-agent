@@ -85,32 +85,39 @@ func (r *LocalRuntime) dispatchHook(
 	return result
 }
 
-// executeSessionStartHooks executes session_start hooks and persists any
-// AdditionalContext as a system message on the session. SystemMessage,
-// if any, is emitted as a Warning by [dispatchHook].
-func (r *LocalRuntime) executeSessionStartHooks(ctx context.Context, sess *session.Session, a *agent.Agent, events chan Event) {
-	result := r.dispatchHook(ctx, a, hooks.EventSessionStart, &hooks.Input{
+// executeSessionStartHooks fires session_start once at the top of
+// RunStream and returns its AdditionalContext as transient system
+// messages. The result is NOT persisted to the session: persisting
+// would pollute the visible transcript and (because session_start
+// fires after the user message has been added) shift the message the
+// runtime relays as the [UserMessageEvent]. Callers thread the
+// returned slice through [session.Session.GetMessages] on every
+// iteration so cwd / OS / arch context reaches the model without ever
+// being stored.
+func (r *LocalRuntime) executeSessionStartHooks(ctx context.Context, sess *session.Session, a *agent.Agent, events chan Event) []chat.Message {
+	return contextMessages(r.dispatchHook(ctx, a, hooks.EventSessionStart, &hooks.Input{
 		SessionID: sess.ID,
 		Source:    "startup",
-	}, events)
-	if result == nil || result.AdditionalContext == "" {
-		return
-	}
-	slog.Debug("Session start hook provided additional context", "context", result.AdditionalContext)
-	sess.AddMessage(session.SystemMessage(result.AdditionalContext))
+	}, events))
 }
 
-// executeTurnStartHooks runs turn_start hooks and returns ephemeral
-// system messages to inject into the model call's messages slice.
-//
-// Unlike session_start, the AdditionalContext from turn_start is NOT
-// persisted to the session — it's recomputed every turn. This is the
-// right semantics for fast-changing context like "Today's date" or the
-// contents of a prompt file the user might be editing during the session.
+// executeTurnStartHooks fires turn_start before each model call and
+// returns its AdditionalContext as transient system messages. Like
+// session_start the result is never persisted, but turn_start runs
+// every iteration so its content is recomputed each turn — the right
+// semantics for fast-changing context like the current date or the
+// contents of a prompt file the user might be editing mid-session.
 func (r *LocalRuntime) executeTurnStartHooks(ctx context.Context, sess *session.Session, a *agent.Agent, events chan Event) []chat.Message {
-	result := r.dispatchHook(ctx, a, hooks.EventTurnStart, &hooks.Input{
+	return contextMessages(r.dispatchHook(ctx, a, hooks.EventTurnStart, &hooks.Input{
 		SessionID: sess.ID,
-	}, events)
+	}, events))
+}
+
+// contextMessages converts a context-providing hook's AdditionalContext
+// into a one-element transient system-message slice ready to thread
+// through [session.Session.GetMessages]. Returns nil for empty results
+// so callers can pass it straight to [slices.Concat] without a guard.
+func contextMessages(result *hooks.Result) []chat.Message {
 	if result == nil || result.AdditionalContext == "" {
 		return nil
 	}

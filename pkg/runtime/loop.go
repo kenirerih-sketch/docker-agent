@@ -156,8 +156,12 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 		a := r.resolveSessionAgent(sess)
 
-		// Execute session start hooks
-		r.executeSessionStartHooks(ctx, sess, a, events)
+		// session_start fires once per RunStream. Its AdditionalContext
+		// (typically the AddEnvironmentInfo env block) is held as transient
+		// extras and threaded into every model call below — never persisted,
+		// to keep the visible transcript clean and the user message tail
+		// stable.
+		sessionStartMsgs := r.executeSessionStartHooks(ctx, sess, a, events)
 
 		// Emit team information
 		events <- TeamInfo(r.agentDetailsFromTeam(), a.Name())
@@ -366,13 +370,14 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			}
 
 			// Run turn_start hooks BEFORE building messages so their
-			// AdditionalContext can be spliced after the invariant cache
-			// checkpoint and before the conversation history. The hook
-			// output is not persisted to the session, so per-turn signals
-			// (date, prompt files) refresh every turn without bloating the
-			// stored history.
+			// AdditionalContext, alongside the session_start extras captured
+			// once at the top of RunStream, can be spliced after the invariant
+			// cache checkpoint and before the conversation history. Neither
+			// hook's output is persisted, so per-turn signals (date, prompt
+			// files) refresh every turn while session-level context (cwd, OS,
+			// arch) stays stable — all without bloating the stored history.
 			turnStartMsgs := r.executeTurnStartHooks(ctx, sess, a, events)
-			messages := sess.GetMessages(a, turnStartMsgs...)
+			messages := sess.GetMessages(a, slices.Concat(sessionStartMsgs, turnStartMsgs)...)
 			slog.Debug("Retrieved messages for processing", "agent", a.Name(), "message_count", len(messages))
 
 			// Strip image content from messages if the model doesn't support image input.

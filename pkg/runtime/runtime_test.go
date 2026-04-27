@@ -1994,6 +1994,75 @@ func TestRunStream_EmptyMessages_SendUserMessage(t *testing.T) {
 	require.NotEmpty(t, events)
 }
 
+// TestRunStream_AddEnvironmentInfo_DoesNotPolluteSession pins the
+// regression where session_start hook output (the AddEnvironmentInfo
+// env block) was persisted as a system message on the session AFTER
+// the user's first message had already been added, then surfaced
+// verbatim as the [UserMessageEvent] because the runtime relays
+// messages[len-1] as the "current" user message.
+func TestRunStream_AddEnvironmentInfo_DoesNotPolluteSession(t *testing.T) {
+	t.Parallel()
+
+	stream := newStreamBuilder().
+		AddContent("reply").
+		AddStopWithUsage(5, 5).
+		Build()
+
+	prov := &mockProvider{id: "test/mock-model", stream: stream}
+	root := agent.New(
+		"root", "You are a test agent",
+		agent.WithModel(prov),
+		agent.WithAddEnvironmentInfo(true),
+	)
+	tm := team.New(team.WithAgents(root))
+
+	rt, err := NewLocalRuntime(
+		tm,
+		WithSessionCompaction(false),
+		WithModelStore(mockModelStore{}),
+		WithWorkingDir(t.TempDir()),
+	)
+	require.NoError(t, err)
+
+	sess := session.New(
+		session.WithUserMessage("hello"),
+		session.WithWorkingDir(t.TempDir()),
+	)
+
+	evCh := rt.RunStream(t.Context(), sess)
+	var events []Event
+	for ev := range evCh {
+		events = append(events, ev)
+	}
+
+	// The persisted transcript must contain only the user message and
+	// the assistant reply — no system message smuggled in by the hook.
+	var roles []chat.MessageRole
+	for _, item := range sess.Messages {
+		if item.IsMessage() {
+			roles = append(roles, item.Message.Message.Role)
+		}
+	}
+	assert.Equal(t,
+		[]chat.MessageRole{chat.MessageRoleUser, chat.MessageRoleAssistant},
+		roles,
+		"session_start hook output must not be persisted as a session message",
+	)
+
+	// The UserMessageEvent must mirror the user's input, not the env
+	// info block produced by the hook.
+	var userEvts []*UserMessageEvent
+	for _, ev := range events {
+		if ue, ok := ev.(*UserMessageEvent); ok {
+			userEvts = append(userEvts, ue)
+		}
+	}
+	require.Len(t, userEvts, 1)
+	assert.Equal(t, "hello", userEvts[0].Message)
+	assert.NotContains(t, userEvts[0].Message, "<env>",
+		"user_message event must not leak the AddEnvironmentInfo block")
+}
+
 // recordingProvider wraps a sequence of mock streams and records the tools
 // passed to each CreateChatCompletionStream call.
 type recordingProvider struct {
