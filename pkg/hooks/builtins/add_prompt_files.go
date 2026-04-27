@@ -9,6 +9,9 @@ import (
 	"github.com/docker/docker-agent/pkg/session"
 )
 
+// AddPromptFiles is the registered name of the add_prompt_files builtin.
+const AddPromptFiles = "add_prompt_files"
+
 // addPromptFiles reads each filename in args (relative to Input.Cwd) and
 // joins their contents into turn_start additional context. Missing files
 // are logged and skipped; surviving files still contribute.

@@ -12,21 +12,14 @@
 // don't change during a session.
 //
 // Each builtin lives in its own file (add_date.go, add_environment_info.go,
-// add_prompt_files.go); this file holds the shared registration plumbing.
+// add_prompt_files.go) along with its registered-name constant; this file
+// holds the shared registration plumbing.
 package builtins
 
 import (
 	"errors"
 
 	"github.com/docker/docker-agent/pkg/hooks"
-)
-
-// Builtin hook names. They match the `command` field of a
-// `{type: builtin}` hook entry in YAML.
-const (
-	AddDate            = "add_date"
-	AddEnvironmentInfo = "add_environment_info"
-	AddPromptFiles     = "add_prompt_files"
 )
 
 // Register installs the stock builtin hooks on r.
