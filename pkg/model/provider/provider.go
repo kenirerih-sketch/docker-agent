@@ -237,26 +237,55 @@ func createDirectProvider(ctx context.Context, cfg *latest.ModelConfig, env envi
 
 	providerType := resolveProviderType(enhancedCfg)
 
-	switch providerType {
-	case "openai", "openai_chatcompletions", "openai_responses":
-		return openai.NewClient(ctx, enhancedCfg, env, opts...)
-	case "anthropic":
-		return anthropic.NewClient(ctx, enhancedCfg, env, opts...)
-	case "google":
-		// Route non-Gemini models on Vertex AI (Model Garden) through the
-		// vertexai package, which picks the right endpoint per publisher.
-		if vertexai.IsModelGardenConfig(enhancedCfg) {
-			return vertexai.NewClient(ctx, enhancedCfg, env, opts...)
-		}
-		return gemini.NewClient(ctx, enhancedCfg, env, opts...)
-	case "dmr":
-		return dmr.NewClient(ctx, enhancedCfg, opts...)
-	case "amazon-bedrock":
-		return bedrock.NewClient(ctx, enhancedCfg, env, opts...)
-	default:
+	factory, ok := providerFactories[providerType]
+	if !ok {
 		slog.Error("Unknown provider type", "type", providerType)
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)
 	}
+	return factory(ctx, enhancedCfg, env, opts...)
+}
+
+// providerFactory builds a Provider from a fully-resolved ModelConfig.
+// Tests may swap entries in providerFactories to exercise dispatch logic
+// without spinning up real provider clients.
+type providerFactory func(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error)
+
+// providerFactories maps a resolved provider type (the value returned by
+// resolveProviderType) to its constructor. The map is package-private but
+// modifiable; tests must restore the original entries with t.Cleanup.
+var providerFactories = map[string]providerFactory{
+	"openai":                 openaiFactory,
+	"openai_chatcompletions": openaiFactory,
+	"openai_responses":       openaiFactory,
+	"anthropic":              anthropicFactory,
+	"google":                 googleFactory,
+	"dmr":                    dmrFactory,
+	"amazon-bedrock":         bedrockFactory,
+}
+
+func openaiFactory(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {
+	return openai.NewClient(ctx, cfg, env, opts...)
+}
+
+func anthropicFactory(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {
+	return anthropic.NewClient(ctx, cfg, env, opts...)
+}
+
+func googleFactory(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {
+	// Route non-Gemini models on Vertex AI (Model Garden) through the
+	// vertexai package, which picks the right endpoint per publisher.
+	if vertexai.IsModelGardenConfig(cfg) {
+		return vertexai.NewClient(ctx, cfg, env, opts...)
+	}
+	return gemini.NewClient(ctx, cfg, env, opts...)
+}
+
+func dmrFactory(ctx context.Context, cfg *latest.ModelConfig, _ environment.Provider, opts ...options.Opt) (Provider, error) {
+	return dmr.NewClient(ctx, cfg, opts...)
+}
+
+func bedrockFactory(ctx context.Context, cfg *latest.ModelConfig, env environment.Provider, opts ...options.Opt) (Provider, error) {
+	return bedrock.NewClient(ctx, cfg, env, opts...)
 }
 
 // ---------------------------------------------------------------------------
