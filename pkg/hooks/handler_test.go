@@ -160,6 +160,46 @@ func TestExecutorHandlerErrorDeniesPreToolUse(t *testing.T) {
 	assert.Equal(t, -1, result.ExitCode)
 }
 
+// TestExecutorHandlerErrorPreservesStderr pins the contract that when a
+// handler returns an error, the diagnostic stderr it captured before
+// failing survives all the way to [Result.Stderr]. aggregate routes
+// that field into the user-visible PreToolUse fail-closed message; if
+// runHook ever drops it on the floor (as it briefly did during the
+// HandlerResult-embedding refactor) PreToolUse denials would lose
+// their explanatory text.
+func TestExecutorHandlerErrorPreservesStderr(t *testing.T) {
+	t.Parallel()
+
+	const customType HookType = "errors-with-stderr"
+	const diagnostic = "BOOM: subprocess crashed at line 42"
+
+	registry := NewRegistry()
+	registry.Register(customType, func(_ HandlerEnv, _ Hook) (Handler, error) {
+		return handlerFunc(func(context.Context, []byte) (HandlerResult, error) {
+			// Mirrors what commandHandler does on a spawn failure: it
+			// captured stderr, then surfaces an exec-level error.
+			return HandlerResult{Stderr: diagnostic, ExitCode: -1}, errors.New("spawn failed")
+		}), nil
+	})
+
+	config := &Config{
+		PreToolUse: []MatcherConfig{
+			{Matcher: "*", Hooks: []Hook{{Type: customType, Timeout: 5}}},
+		},
+	}
+
+	exec := NewExecutorWithRegistry(config, t.TempDir(), nil, registry)
+	result, err := exec.Dispatch(t.Context(), EventPreToolUse, &Input{
+		SessionID: "s", ToolName: "shell", ToolUseID: "t",
+	})
+	require.NoError(t, err)
+
+	assert.False(t, result.Allowed)
+	assert.Equal(t, -1, result.ExitCode)
+	assert.Equal(t, diagnostic, result.Stderr,
+		"handler-captured stderr must survive the err != nil normalization in runHook")
+}
+
 // handlerFunc adapts a function value into a [Handler] for terse tests.
 type handlerFunc func(context.Context, []byte) (HandlerResult, error)
 

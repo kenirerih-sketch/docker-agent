@@ -211,6 +211,20 @@ func (e *Executor) runHook(ctx context.Context, hook Hook, inputJSON []byte) hoo
 	res, err := handler.Run(timeoutCtx, inputJSON)
 	r := hookResult{HandlerResult: res}
 
+	// markFailed turns r into a "did not complete" outcome: the
+	// handler's diagnostic stdout/stderr survive (aggregate surfaces
+	// stderr in the PreToolUse fail-closed message), ExitCode is
+	// pinned to -1 to match the documented [Result.ExitCode]
+	// convention, any partial Output is dropped (it can't have been
+	// authoritative if the run didn't complete), and rerr lands in
+	// hookResult.err for the err-!= nil branch in [aggregate].
+	markFailed := func(rerr error) hookResult {
+		r.ExitCode = -1
+		r.Output = nil
+		r.err = rerr
+		return r
+	}
+
 	// Normalize timeout/cancellation: handler error types vary, so we
 	// rewrite to a uniform error so PreToolUse fails closed cleanly.
 	if ctxErr := timeoutCtx.Err(); ctxErr != nil {
@@ -218,16 +232,10 @@ func (e *Executor) runHook(ctx context.Context, hook Hook, inputJSON []byte) hoo
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			reason = fmt.Sprintf("timed out after %s", hook.GetTimeout())
 		}
-		return hookResult{
-			HandlerResult: HandlerResult{Stderr: res.Stderr, ExitCode: -1},
-			err:           fmt.Errorf("hook %q %s: %w", hook.Command, reason, ctxErr),
-		}
+		return markFailed(fmt.Errorf("hook %q %s: %w", hook.Command, reason, ctxErr))
 	}
 	if err != nil {
-		return hookResult{
-			HandlerResult: HandlerResult{Stderr: res.Stderr, ExitCode: -1},
-			err:           err,
-		}
+		return markFailed(err)
 	}
 
 	// Fall back to the legacy "parse JSON from stdout" protocol.
