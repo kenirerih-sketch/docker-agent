@@ -25,6 +25,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +56,15 @@ type Options struct {
 	// CORSOrigin is the allowed value for the Access-Control-Allow-Origin
 	// header. When empty, the CORS middleware is not registered at all
 	// (the server never emits any Access-Control-* response header).
+	//
+	// Multiple values can be provided separated by commas. Each entry is
+	// either a literal origin (matched exactly), the wildcard "*", or a
+	// pattern starting with "~" interpreted as a Go regular expression
+	// against the request's Origin header. Examples:
+	//
+	//	"https://app.example.com"
+	//	"https://app.example.com,https://staging.example.com"
+	//	"~^https://[a-z0-9-]+\\.example\\.com$"
 	CORSOrigin string
 	// APIKey, if non-empty, is the static bearer token clients must
 	// present in the `Authorization` header (`Authorization: Bearer X`).
@@ -196,12 +207,14 @@ func newRouter(s *server, opts Options) http.Handler {
 		e.Use(bearerAuthMiddleware(opts.APIKey))
 	}
 	if opts.CORSOrigin != "" {
-		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-			AllowOrigins: []string{opts.CORSOrigin},
-			AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
-			AllowHeaders: []string{"Authorization", "Content-Type", "Accept"},
-			MaxAge:       86400,
-		}))
+		cfg, err := corsMiddlewareConfig(opts.CORSOrigin)
+		if err != nil {
+			// Bad config is reported via the request log. The middleware
+			// is simply not registered, which is the safest default.
+			slog.Error("Invalid --cors-origin, CORS disabled", "error", err)
+		} else {
+			e.Use(middleware.CORSWithConfig(cfg))
+		}
 	}
 
 	e.GET("/v1/models", s.handleModels)
@@ -220,6 +233,84 @@ func requestTimeoutMiddleware(d time.Duration) echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+// corsMiddlewareConfig parses a comma-separated --cors-origin value into an
+// echo middleware.CORSConfig. Each entry is one of:
+//
+//   - the literal "*" wildcard;
+//   - a regex when prefixed with "~" (compiled and matched against the
+//     request's Origin header);
+//   - a literal origin matched verbatim.
+//
+// Returns an error when no entry parses successfully, in which case the
+// caller leaves the middleware unregistered.
+func corsMiddlewareConfig(spec string) (middleware.CORSConfig, error) {
+	var literals []string
+	var patterns []*regexp.Regexp
+	for raw := range strings.SplitSeq(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(entry, "~"); ok {
+			re, err := regexp.Compile(rest)
+			if err != nil {
+				return middleware.CORSConfig{}, fmt.Errorf("invalid CORS regex %q: %w", rest, err)
+			}
+			patterns = append(patterns, re)
+			continue
+		}
+		if err := validateCORSOrigin(entry); err != nil {
+			return middleware.CORSConfig{}, err
+		}
+		literals = append(literals, entry)
+	}
+	if len(literals) == 0 && len(patterns) == 0 {
+		return middleware.CORSConfig{}, errors.New("no usable CORS origins")
+	}
+
+	cfg := middleware.CORSConfig{
+		AllowOrigins: literals,
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowHeaders: []string{"Authorization", "Content-Type", "Accept"},
+		MaxAge:       86400,
+	}
+	if len(patterns) > 0 {
+		cfg.AllowOriginFunc = func(origin string) (bool, error) {
+			for _, re := range patterns {
+				if re.MatchString(origin) {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+	}
+	return cfg, nil
+}
+
+// validateCORSOrigin sanity-checks a literal origin entry. The aim is to
+// reject obvious typos early ("http//foo.com", "https://foo.com/bar")
+// rather than to be a full URL parser — the echo middleware will still
+// do its own matching at request time.
+func validateCORSOrigin(o string) error {
+	if o == "*" {
+		return nil
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return fmt.Errorf("invalid CORS origin %q: %w", o, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid CORS origin %q: scheme must be http or https", o)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("invalid CORS origin %q: missing host", o)
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("invalid CORS origin %q: must not include path, query, or fragment", o)
+	}
+	return nil
 }
 
 // bearerAuthMiddleware enforces the static `Authorization: Bearer <token>`

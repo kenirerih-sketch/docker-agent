@@ -175,6 +175,82 @@ func TestNewRouter_CORSAllowsConfiguredOrigin(t *testing.T) {
 	assert.Equal(t, "https://example.com", rec.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestCorsMiddlewareConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		spec    string
+		wantErr bool
+	}{
+		{name: "single literal", spec: "https://app.example.com"},
+		{name: "comma list", spec: "https://a.example.com, https://b.example.com"},
+		{name: "regex", spec: `~^https://[a-z]+\.example\.com$`},
+		{name: "wildcard", spec: "*"},
+		{name: "mixed", spec: `https://a.example.com,~^https://b\.example\.com$`},
+		{name: "empty entries collapse", spec: ", , https://x.com,,"},
+
+		{name: "missing scheme", spec: "app.example.com", wantErr: true},
+		{name: "with path", spec: "https://example.com/api", wantErr: true},
+		{name: "with query", spec: "https://example.com?x=1", wantErr: true},
+		{name: "bad regex", spec: "~[", wantErr: true},
+		{name: "all blanks", spec: ", , ,", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := corsMiddlewareConfig(tc.spec)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestNewRouter_CORSAllowList(t *testing.T) {
+	srv, _ := newTestServer("root")
+	r := newRouter(srv, Options{CORSOrigin: "https://a.example.com,https://b.example.com"})
+
+	cases := []struct {
+		origin string
+		want   string // expected Access-Control-Allow-Origin
+	}{
+		{"https://a.example.com", "https://a.example.com"},
+		{"https://b.example.com", "https://b.example.com"},
+		{"https://evil.example.com", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.origin, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/models", http.NoBody)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Access-Control-Request-Method", "GET")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			assert.Equal(t, tc.want, rec.Header().Get("Access-Control-Allow-Origin"))
+		})
+	}
+}
+
+func TestNewRouter_CORSRegex(t *testing.T) {
+	srv, _ := newTestServer("root")
+	r := newRouter(srv, Options{CORSOrigin: `~^https://[a-z]+\.example\.com$`})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/models", http.NoBody)
+	req.Header.Set("Origin", "https://staging.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, "https://staging.example.com", rec.Header().Get("Access-Control-Allow-Origin"))
+
+	// A non-matching origin must not get the header.
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/models", http.NoBody)
+	req2.Header.Set("Origin", "https://evil.attacker.com")
+	req2.Header.Set("Access-Control-Request-Method", "GET")
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	assert.Empty(t, rec2.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestBearerAuthMiddleware(t *testing.T) {
 	cases := []struct {
 		name       string
