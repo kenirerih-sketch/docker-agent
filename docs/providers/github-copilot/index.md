@@ -71,8 +71,14 @@ for the current model list.
 
 GitHub's Copilot API rejects requests that don't carry a
 `Copilot-Integration-Id` header with a `Bad Request` error. docker-agent
-automatically sends a sensible default (`vscode-chat`) for the
-`github-copilot` provider, so PAT-based usage works out of the box.
+automatically sends `copilot-developer-cli` for the `github-copilot`
+provider, so PAT-based usage works out of the box.
+
+We specifically chose `copilot-developer-cli` (instead of, say,
+`vscode-chat`) because it is the integration id accepted by the Copilot
+API for **both** OAuth tokens and Personal Access Tokens. Most
+docker-agent users authenticate with a PAT exported as `GITHUB_TOKEN`,
+and `vscode-chat` is rejected for those tokens.
 
 If you need to send a different integration id — for example if your
 organization allows-lists a specific value — you can override it via
@@ -115,7 +121,7 @@ GitHub Copilot is implemented as a built-in alias in docker-agent:
 - **API type:** OpenAI-compatible (Chat Completions)
 - **Base URL:** `https://api.githubcopilot.com`
 - **Token variable:** `GITHUB_TOKEN`
-- **Default headers:** `Copilot-Integration-Id: vscode-chat`
+- **Default headers:** `Copilot-Integration-Id: copilot-developer-cli`
 
 This means the same client as OpenAI is used, so every OpenAI feature
 supported by docker-agent (tool calling, structured output, multimodal

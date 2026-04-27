@@ -216,7 +216,7 @@ models:
 ```
 
 Header names are matched case-insensitively. The `github-copilot` provider
-automatically sets `Copilot-Integration-Id: vscode-chat` — see the
+automatically sets `Copilot-Integration-Id: copilot-developer-cli` — see the
 [GitHub Copilot provider page]({{ '/providers/github-copilot/' | relative_url }})
 for details.
 

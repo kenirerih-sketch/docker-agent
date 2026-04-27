@@ -1,9 +1,10 @@
 #!/usr/bin/env docker agent run
 
 # GitHub Copilot requires a `Copilot-Integration-Id` header on every request
-# to https://api.githubcopilot.com. docker-agent sends a sensible default
-# (`vscode-chat`) automatically, but you can override it (or add any other
-# custom header) via `provider_opts.http_headers`.
+# to https://api.githubcopilot.com. docker-agent sends `copilot-developer-cli`
+# automatically (it works with both OAuth tokens and Personal Access Tokens),
+# but you can override it (or add any other custom header) via
+# `provider_opts.http_headers`.
 #
 # See https://github.com/docker/docker-agent/issues/2471
 

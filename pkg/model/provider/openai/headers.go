@@ -13,13 +13,21 @@ import (
 // GitHub Copilot's API requires a Copilot-Integration-Id header to
 // identify the client integration when authenticating with a GitHub
 // token. Without it, requests to https://api.githubcopilot.com are
-// rejected with "Bad Request". We default to the identifier used by
-// other integrations that have been validated against the Copilot API.
+// rejected with "Bad Request".
+//
+// We default to "copilot-developer-cli" because, unlike "vscode-chat",
+// it is accepted by the Copilot API for both OAuth tokens and Personal
+// Access Tokens (PATs). Most docker-agent users authenticate with a
+// PAT exported as GITHUB_TOKEN, so this default makes the provider
+// usable out of the box.
+//
+// Users can still override this via provider_opts.http_headers (see
+// buildHeaderOptions below).
 //
 // See https://github.com/docker/docker-agent/issues/2471
 const (
 	copilotIntegrationIDHeader  = "Copilot-Integration-Id"
-	copilotIntegrationIDDefault = "vscode-chat"
+	copilotIntegrationIDDefault = "copilot-developer-cli"
 )
 
 // buildHeaderOptions returns OpenAI client options for every custom
@@ -34,7 +42,7 @@ const (
 //	    model: gpt-4o
 //	    provider_opts:
 //	      http_headers:
-//	        Copilot-Integration-Id: vscode-chat
+//	        Copilot-Integration-Id: vscode-chat # override default
 //
 // For the github-copilot provider a default Copilot-Integration-Id is
 // injected when the user has not set one. Header names are compared
