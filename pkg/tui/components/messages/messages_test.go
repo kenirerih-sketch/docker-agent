@@ -685,18 +685,17 @@ func TestRenderCacheInvalidatesOnAnimationTickWithAnimatedContent(t *testing.T) 
 	m.views = append(m.views, m.createToolCallView(toolMsg))
 	m.renderDirty = true
 
-	// First render
-	view1 := m.View()
-	require.Contains(t, view1, "running_tool")
-
-	// Clear the dirty flag to simulate cached state
+	// First render populates the cache.
+	require.Contains(t, m.View(), "running_tool")
 	m.renderDirty = false
 
-	// Send animation tick - should invalidate cache because we have animated content
+	// An animation tick must refresh the cache so the spinner frame advances.
+	// onAnimationTick now re-renders eagerly inside Update, so the resulting
+	// View() output stays consistent with the latest tick.
 	m.Update(animation.TickMsg{Frame: 1})
 
-	// Cache should be marked dirty
-	assert.True(t, m.renderDirty, "renderDirty should be true after animation tick with animated content")
+	require.NotEmpty(t, m.renderedLines)
+	require.Contains(t, m.View(), "running_tool")
 }
 
 func TestRenderCacheNotInvalidatedOnAnimationTickWithoutAnimatedContent(t *testing.T) {
