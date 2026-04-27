@@ -368,7 +368,7 @@ func (s *server) handleChatCompletions(c echo.Context) error {
 	}
 
 	conversationID := c.Request().Header.Get("X-Conversation-Id")
-	sess, isNew := s.resolveSession(conversationID, req.Messages)
+	sess := s.resolveSession(conversationID, req.Messages)
 	if sess == nil {
 		return writeError(c, http.StatusBadRequest, "no user message provided")
 	}
@@ -389,11 +389,11 @@ func (s *server) handleChatCompletions(c echo.Context) error {
 
 	if req.Stream {
 		err := s.streamChatCompletion(c, rt, sess, model)
-		s.maybeStoreConversation(conversationID, sess, isNew)
+		s.maybeStoreConversation(conversationID, sess)
 		return err
 	}
 	err = s.chatCompletion(c, rt, sess, model)
-	s.maybeStoreConversation(conversationID, sess, isNew)
+	s.maybeStoreConversation(conversationID, sess)
 	return err
 }
 
@@ -402,24 +402,20 @@ func (s *server) handleChatCompletions(c echo.Context) error {
 // session for it, we append only the latest user message from the
 // request (the prior history is already in the session). Otherwise we
 // build a brand-new session from the full request history.
-//
-// Returns the session to run, plus a flag indicating whether it was
-// freshly created (so callers know whether they need to insert it into
-// the cache).
-func (s *server) resolveSession(id string, msgs []ChatCompletionMessage) (*session.Session, bool) {
+func (s *server) resolveSession(id string, msgs []ChatCompletionMessage) *session.Session {
 	if id != "" {
 		if existing := s.conversations.Get(id); existing != nil {
 			appendLatestUser(existing, msgs)
-			return existing, false
+			return existing
 		}
 	}
-	return buildSession(msgs), true
+	return buildSession(msgs)
 }
 
 // maybeStoreConversation inserts the session into the cache after a
 // run. We always insert to handle the case where the conversation was
 // evicted while the request was in flight.
-func (s *server) maybeStoreConversation(id string, sess *session.Session, isNew bool) {
+func (s *server) maybeStoreConversation(id string, sess *session.Session) {
 	if id == "" || s.conversations == nil {
 		return
 	}
@@ -428,6 +424,7 @@ func (s *server) maybeStoreConversation(id string, sess *session.Session, isNew 
 	// and ensures the updated session is stored.
 	s.conversations.Put(id, sess)
 }
+
 // non-streaming OpenAI ChatCompletion object.
 func (s *server) chatCompletion(c echo.Context, rt runtime.Runtime, sess *session.Session, model string) error {
 	var toolCalls []ToolCallReference
