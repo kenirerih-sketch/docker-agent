@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker-agent/pkg/chat"
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/hooks"
+	"github.com/docker/docker-agent/pkg/hooks/builtins"
 	"github.com/docker/docker-agent/pkg/modelsdev"
 	"github.com/docker/docker-agent/pkg/session"
 	"github.com/docker/docker-agent/pkg/sessiontitle"
@@ -326,7 +327,7 @@ func NewLocalRuntime(agents *team.Team, opts ...Opt) (*LocalRuntime, error) {
 	}
 
 	hooksRegistry := hooks.NewRegistry()
-	if err := registerBuiltinHooks(hooksRegistry); err != nil {
+	if err := builtins.Register(hooksRegistry); err != nil {
 		return nil, fmt.Errorf("register builtin hooks: %w", err)
 	}
 
@@ -604,20 +605,20 @@ func (r *LocalRuntime) getHooksExecutor(a *agent.Agent) *hooks.Executor {
 	if a.AddDate() {
 		hooksCfg.TurnStart = append(hooksCfg.TurnStart, hooks.Hook{
 			Type:    hooks.HookTypeBuiltin,
-			Command: BuiltinAddDate,
+			Command: builtins.AddDate,
 		})
 	}
 	if files := a.AddPromptFiles(); len(files) > 0 {
 		hooksCfg.TurnStart = append(hooksCfg.TurnStart, hooks.Hook{
 			Type:    hooks.HookTypeBuiltin,
-			Command: BuiltinAddPromptFiles,
+			Command: builtins.AddPromptFiles,
 			Args:    files,
 		})
 	}
 	if a.AddEnvironmentInfo() {
 		hooksCfg.SessionStart = append(hooksCfg.SessionStart, hooks.Hook{
 			Type:    hooks.HookTypeBuiltin,
-			Command: BuiltinAddEnvironmentInfo,
+			Command: builtins.AddEnvironmentInfo,
 		})
 	}
 	if hooksCfg.IsEmpty() {
