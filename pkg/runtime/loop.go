@@ -106,6 +106,26 @@ func appendNewlineToQueuedMessage(sm QueuedMessage) QueuedMessage {
 	return sm
 }
 
+// emitHookDrivenShutdown fans out the standard Error /
+// notification(level=error) / on_error stanzas when a hook
+// (post_tool_use or before_llm_call) signals run termination.
+func (r *LocalRuntime) emitHookDrivenShutdown(
+	ctx context.Context,
+	a *agent.Agent,
+	sess *session.Session,
+	message string,
+	events chan Event,
+) {
+	if message == "" {
+		// aggregate() always populates Result.Message on a deny
+		// verdict; the fallback covers any future hook that returns
+		// block without a reason.
+		message = "Agent terminated by a hook."
+	}
+	events <- Error(message)
+	r.notifyError(ctx, a, sess.ID, message)
+}
+
 // finalizeEventChannel performs cleanup at the end of a RunStream goroutine:
 // restores the previous elicitation channel, emits the StreamStopped event,
 // fires hooks, and closes the events channel.
@@ -388,9 +408,15 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			}
 
 			// before_llm_call hooks fire just before the model is invoked.
-			// They are observational only (no deny semantics today); use
-			// turn_start to contribute system messages.
-			r.executeBeforeLLMCallHooks(ctx, sess, a)
+			// A terminating verdict (e.g. from the max_iterations builtin)
+			// stops the run loop here, before any tokens are spent.
+			if stop, msg := r.executeBeforeLLMCallHooks(ctx, sess, a); stop {
+				slog.Warn("before_llm_call hook signalled run termination",
+					"agent", a.Name(), "session_id", sess.ID, "reason", msg)
+				r.emitHookDrivenShutdown(ctx, a, sess, msg, events)
+				streamSpan.End()
+				return
+			}
 
 			// Try primary model with fallback chain if configured
 			res, usedModel, err := r.tryModelWithFallback(streamCtx, a, model, messages, agentTools, sess, m, events)
@@ -474,7 +500,7 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 			// measure how much content was added by tool results.
 			messageCountBeforeTools := len(sess.GetAllMessages())
 
-			r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
+			stopRun, stopMsg := r.processToolCalls(ctx, sess, res.Calls, agentTools, events)
 
 			// Re-probe toolsets after tool calls: an install/setup tool call may
 			// have made a previously-unavailable LSP or MCP connectable. reprobe()
@@ -506,6 +532,18 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 				events <- Error(errMsg)
 				r.notifyError(ctx, a, sess.ID, errMsg)
 				loopDetector.reset()
+				return
+			}
+
+			// post_tool_use hook signalled run termination via a deny
+			// verdict (decision="block" / continue=false / exit 2).
+			// User-authored hooks can use this to stop the run; the
+			// runtime fans out the standard Error / notification /
+			// on_error stanzas before exiting.
+			if stopRun {
+				slog.Warn("post_tool_use hook signalled run termination",
+					"agent", a.Name(), "session_id", sess.ID, "reason", stopMsg)
+				r.emitHookDrivenShutdown(ctx, a, sess, stopMsg, events)
 				return
 			}
 

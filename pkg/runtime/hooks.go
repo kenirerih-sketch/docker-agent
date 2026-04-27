@@ -128,12 +128,14 @@ func contextMessages(result *hooks.Result) []chat.Message {
 }
 
 // executeSessionEndHooks fires session_end when the run loop exits
-// (stream closed, context done, ...).
+// and clears any per-session state held by stateful builtins so a
+// long-running runtime stays bounded.
 func (r *LocalRuntime) executeSessionEndHooks(ctx context.Context, sess *session.Session, a *agent.Agent) {
 	r.dispatchHook(ctx, a, hooks.EventSessionEnd, &hooks.Input{
 		SessionID: sess.ID,
 		Reason:    "stream_ended",
 	}, nil)
+	r.builtinsState.ClearSession(sess.ID)
 }
 
 // executeStopHooks fires stop hooks when the model finishes responding,
@@ -176,14 +178,18 @@ func (r *LocalRuntime) notify(ctx context.Context, a *agent.Agent, event hooks.E
 }
 
 // executeBeforeLLMCallHooks fires before_llm_call just before each
-// model call. The output is informational (not honored as a deny
-// verdict yet), making this the right event for cost guardrails,
-// auditing, and observability. Hooks that want to contribute system
-// messages should use turn_start instead.
-func (r *LocalRuntime) executeBeforeLLMCallHooks(ctx context.Context, sess *session.Session, a *agent.Agent) {
-	r.dispatchHook(ctx, a, hooks.EventBeforeLLMCall, &hooks.Input{
+// model call. A terminating verdict (decision="block" / continue=false
+// / exit 2) stops the run loop — see [hooks.EventBeforeLLMCall] for
+// the contract. Hooks that just want to contribute system messages
+// should target turn_start instead.
+func (r *LocalRuntime) executeBeforeLLMCallHooks(ctx context.Context, sess *session.Session, a *agent.Agent) (stop bool, message string) {
+	result := r.dispatchHook(ctx, a, hooks.EventBeforeLLMCall, &hooks.Input{
 		SessionID: sess.ID,
 	}, nil)
+	if result == nil || result.Allowed {
+		return false, ""
+	}
+	return true, result.Message
 }
 
 // executeAfterLLMCallHooks fires after_llm_call after a successful
