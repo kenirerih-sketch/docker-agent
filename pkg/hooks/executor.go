@@ -124,13 +124,17 @@ func (e *Executor) Has(event EventType) bool {
 
 // Dispatch runs the hooks registered for event and aggregates their
 // verdicts into a single [Result]. Sets input.HookEventName so handlers
-// don't have to remember.
+// don't have to remember. Defaults [Input.Cwd] to the executor's
+// working directory when the caller didn't supply one.
 func (e *Executor) Dispatch(ctx context.Context, event EventType, input *Input) (*Result, error) {
 	matchers := e.events[event]
 	if len(matchers) == 0 {
 		return &Result{Allowed: true}, nil
 	}
 	input.HookEventName = event
+	if input.Cwd == "" {
+		input.Cwd = e.workingDir
+	}
 
 	// Collect, filter by tool name, and dedup by (type, command, args).
 	// Dedup catches the common case of an explicit YAML hook overlapping

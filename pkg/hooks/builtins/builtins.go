@@ -45,14 +45,60 @@ func Register(r *hooks.Registry) error {
 	return nil
 }
 
+// AgentDefaults captures the agent-level flags that map onto stock
+// builtin hook entries. Pass each AgentConfig.AddXxx flag as-is.
+type AgentDefaults struct {
+	AddDate            bool
+	AddEnvironmentInfo bool
+	AddPromptFiles     []string
+}
+
+// IsZero reports whether no agent default would inject any builtin.
+func (d AgentDefaults) IsZero() bool {
+	return !d.AddDate && !d.AddEnvironmentInfo && len(d.AddPromptFiles) == 0
+}
+
+// ApplyAgentDefaults appends the stock builtin hook entries implied by
+// d to cfg, returning the (possibly mutated) config.
+//
+// add_date and add_prompt_files target turn_start so they recompute
+// every turn; add_environment_info targets session_start because cwd /
+// OS / arch don't change during a session.
+//
+// A nil cfg is treated as empty; the returned value is non-nil iff at
+// least one hook (user-configured or auto-injected) is present.
+func ApplyAgentDefaults(cfg *hooks.Config, d AgentDefaults) *hooks.Config {
+	if cfg == nil {
+		cfg = &hooks.Config{}
+	}
+	if d.AddDate {
+		cfg.TurnStart = append(cfg.TurnStart, hooks.Hook{
+			Type:    hooks.HookTypeBuiltin,
+			Command: AddDate,
+		})
+	}
+	if len(d.AddPromptFiles) > 0 {
+		cfg.TurnStart = append(cfg.TurnStart, hooks.Hook{
+			Type:    hooks.HookTypeBuiltin,
+			Command: AddPromptFiles,
+			Args:    d.AddPromptFiles,
+		})
+	}
+	if d.AddEnvironmentInfo {
+		cfg.SessionStart = append(cfg.SessionStart, hooks.Hook{
+			Type:    hooks.HookTypeBuiltin,
+			Command: AddEnvironmentInfo,
+		})
+	}
+	if cfg.IsEmpty() {
+		return nil
+	}
+	return cfg
+}
+
 // turnStartContext wraps additional context as a turn_start output.
 func turnStartContext(content string) *hooks.Output {
-	return &hooks.Output{
-		HookSpecificOutput: &hooks.HookSpecificOutput{
-			HookEventName:     hooks.EventTurnStart,
-			AdditionalContext: content,
-		},
-	}
+	return hooks.NewAdditionalContextOutput(hooks.EventTurnStart, content)
 }
 
 // addDate emits today's date as turn_start additional context.
@@ -66,12 +112,7 @@ func addEnvironmentInfo(_ context.Context, in *hooks.Input, _ []string) (*hooks.
 	if in == nil || in.Cwd == "" {
 		return nil, nil
 	}
-	return &hooks.Output{
-		HookSpecificOutput: &hooks.HookSpecificOutput{
-			HookEventName:     hooks.EventSessionStart,
-			AdditionalContext: session.GetEnvironmentInfo(in.Cwd),
-		},
-	}, nil
+	return hooks.NewAdditionalContextOutput(hooks.EventSessionStart, session.GetEnvironmentInfo(in.Cwd)), nil
 }
 
 // addPromptFiles reads each filename in args (relative to Input.Cwd) and

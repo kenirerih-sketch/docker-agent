@@ -173,3 +173,57 @@ func lookup(t *testing.T, name string) hooks.BuiltinFunc {
 	require.NotNil(t, fn)
 	return fn
 }
+
+// TestApplyAgentDefaultsNilOnAllZero pins the empty-config contract:
+// with no flags set and no user-supplied hooks, ApplyAgentDefaults
+// returns nil so the runtime can skip building an Executor entirely
+// (the dispatch-zero-hooks fast path).
+func TestApplyAgentDefaultsNilOnAllZero(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, builtins.AgentDefaults{}.IsZero())
+	assert.Nil(t, builtins.ApplyAgentDefaults(nil, builtins.AgentDefaults{}))
+	assert.Nil(t, builtins.ApplyAgentDefaults(&hooks.Config{}, builtins.AgentDefaults{}))
+}
+
+// TestApplyAgentDefaultsInjectsExpectedEvents verifies which event each
+// flag targets — turn_start for date / prompt files (recompute every
+// turn), session_start for environment info (cwd / OS / arch are
+// session-stable). Regressing this would silently change when users
+// see today's date.
+func TestApplyAgentDefaultsInjectsExpectedEvents(t *testing.T) {
+	t.Parallel()
+
+	cfg := builtins.ApplyAgentDefaults(nil, builtins.AgentDefaults{
+		AddDate:            true,
+		AddEnvironmentInfo: true,
+		AddPromptFiles:     []string{"PROMPT.md"},
+	})
+	require.NotNil(t, cfg)
+
+	require.Len(t, cfg.TurnStart, 2, "add_date and add_prompt_files must inject turn_start hooks")
+	assert.Equal(t, builtins.AddDate, cfg.TurnStart[0].Command)
+	assert.Equal(t, hooks.HookTypeBuiltin, cfg.TurnStart[0].Type)
+	assert.Equal(t, builtins.AddPromptFiles, cfg.TurnStart[1].Command)
+	assert.Equal(t, []string{"PROMPT.md"}, cfg.TurnStart[1].Args)
+
+	require.Len(t, cfg.SessionStart, 1, "add_environment_info must inject a session_start hook")
+	assert.Equal(t, builtins.AddEnvironmentInfo, cfg.SessionStart[0].Command)
+}
+
+// TestApplyAgentDefaultsAppendsToUserHooks documents that auto-injected
+// builtins coexist with user-authored entries — they're appended, not
+// replaced. The executor's dedup logic then collapses any overlap so
+// a user-authored `add_date` plus `addDate=true` runs exactly once.
+func TestApplyAgentDefaultsAppendsToUserHooks(t *testing.T) {
+	t.Parallel()
+
+	user := hooks.Hook{Type: hooks.HookTypeCommand, Command: "echo hi"}
+	cfg := &hooks.Config{TurnStart: []hooks.Hook{user}}
+
+	got := builtins.ApplyAgentDefaults(cfg, builtins.AgentDefaults{AddDate: true})
+	require.NotNil(t, got)
+	require.Len(t, got.TurnStart, 2)
+	assert.Equal(t, user, got.TurnStart[0])
+	assert.Equal(t, builtins.AddDate, got.TurnStart[1].Command)
+}

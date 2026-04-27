@@ -11,10 +11,11 @@ import (
 	"github.com/docker/docker-agent/pkg/team"
 )
 
-// TestGetHooksExecutorWiresAgentFlagsToBuiltins verifies the wiring
-// performed by [LocalRuntime.getHooksExecutor]: agent.AddDate /
-// AddEnvironmentInfo / AddPromptFiles flags must translate into builtin
-// hook entries on the right event:
+// TestHooksExecWiresAgentFlagsToBuiltins verifies the wiring performed
+// by [LocalRuntime.hooksExec] (and the underlying
+// [builtins.ApplyAgentDefaults]): agent.AddDate / AddEnvironmentInfo /
+// AddPromptFiles flags must translate into builtin hook entries on the
+// right event:
 //
 //   - AddDate           -> turn_start (re-evaluated every turn)
 //   - AddPromptFiles    -> turn_start (file may be edited mid-session)
@@ -26,7 +27,7 @@ import (
 // actually resolves on the runtime's private registry. That smoke
 // check catches mismatches between the constants used here and those
 // in the builtins package.
-func TestGetHooksExecutorWiresAgentFlagsToBuiltins(t *testing.T) {
+func TestHooksExecWiresAgentFlagsToBuiltins(t *testing.T) {
 	t.Parallel()
 
 	prov := &mockProvider{id: "test/mock-model", stream: &mockStream{}}
@@ -80,12 +81,17 @@ func TestGetHooksExecutorWiresAgentFlagsToBuiltins(t *testing.T) {
 			r, err := NewLocalRuntime(tm, WithModelStore(mockModelStore{}))
 			require.NoError(t, err)
 
-			exec := r.getHooksExecutor(a)
+			exec := r.hooksExec(a)
 			if tc.wantNoExecutor {
 				assert.Nil(t, exec, "no flags must not produce an executor")
 				return
 			}
 			require.NotNil(t, exec)
+
+			// hooksExec caches the executor by agent name. Calling it twice
+			// returns the same pointer, so per-turn dispatches don't pay
+			// the matcher-compilation cost repeatedly.
+			assert.Same(t, exec, r.hooksExec(a), "hooksExec must cache by agent name")
 
 			assert.Equal(t, tc.wantTurnStart, exec.Has(hooks.EventTurnStart),
 				"turn_start activation must match flags")
@@ -93,7 +99,7 @@ func TestGetHooksExecutorWiresAgentFlagsToBuiltins(t *testing.T) {
 				"session_start activation must match flags")
 
 			// Smoke Dispatch: confirms the builtin name registered by
-			// getHooksExecutor actually resolves on the runtime's private
+			// hooksExec actually resolves on the runtime's private
 			// registry. This catches mismatches between the constants used
 			// in runtime.go and those in pkg/hooks/builtins.
 			if tc.wantTurnStart {

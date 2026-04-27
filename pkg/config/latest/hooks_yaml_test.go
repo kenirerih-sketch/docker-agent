@@ -129,8 +129,8 @@ turn_start:
 }
 
 // TestHooksConfig_IsEmptyConsidersTurnStart ensures the new event slice
-// participates in the IsEmpty check (otherwise getHooksExecutor would
-// short-circuit even when only turn_start is configured).
+// participates in the IsEmpty check (otherwise the runtime's executor
+// builder would short-circuit even when only turn_start is configured).
 func TestHooksConfig_IsEmptyConsidersTurnStart(t *testing.T) {
 	t.Parallel()
 

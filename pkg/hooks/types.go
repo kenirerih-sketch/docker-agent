@@ -143,6 +143,22 @@ const (
 	DecisionAsk   Decision = "ask"
 )
 
+// NewAdditionalContextOutput is a small helper for in-process [BuiltinFunc]
+// implementations that just want to contribute additional context for a
+// given event. Returning the result of this helper is equivalent to
+// returning a fully-populated [Output] with [HookSpecificOutput] set.
+func NewAdditionalContextOutput(event EventType, content string) *Output {
+	if content == "" {
+		return nil
+	}
+	return &Output{
+		HookSpecificOutput: &HookSpecificOutput{
+			HookEventName:     event,
+			AdditionalContext: content,
+		},
+	}
+}
+
 // Output is the JSON-decoded output of a hook.
 type Output struct {
 	// Continue indicates whether to continue execution (default: true).
