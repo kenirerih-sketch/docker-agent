@@ -2,6 +2,7 @@ package chatserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,6 +186,22 @@ func TestNewRouter_RejectsOversizedBody(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+func TestSSEStream_SendError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s := newSSEStream(rec, "chatcmpl-x", "root")
+	s.sendError(errors.New("model exploded"))
+	s.send(ChatCompletionStreamDelta{}, "error")
+	s.done()
+
+	body := rec.Body.String()
+	// One error envelope.
+	assert.Contains(t, body, `"error":{"message":"model exploded"`)
+	// One terminating chunk with finish_reason=error (instead of stop).
+	assert.Contains(t, body, `"finish_reason":"error"`)
+	// And the OpenAI sentinel.
+	assert.Contains(t, body, "data: [DONE]")
 }
 
 func TestRequestTimeoutMiddleware_AppliesDeadline(t *testing.T) {

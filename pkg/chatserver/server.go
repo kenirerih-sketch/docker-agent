@@ -251,16 +251,22 @@ func (s *server) streamChatCompletion(c echo.Context, rt runtime.Runtime, sess *
 	// Initial "role: assistant" delta so clients can start rendering.
 	stream.send(ChatCompletionStreamDelta{Role: "assistant"}, "")
 
-	if err := runAgentLoop(c.Request().Context(), rt, sess, func(content string) {
+	runErr := runAgentLoop(c.Request().Context(), rt, sess, func(content string) {
 		if content != "" {
 			stream.send(ChatCompletionStreamDelta{Content: content}, "")
 		}
-	}); err != nil {
-		// Surface the error as a final content chunk so the client sees it.
-		stream.send(ChatCompletionStreamDelta{Content: fmt.Sprintf("\n\n[error: %v]", err)}, "")
+	})
+	if runErr != nil {
+		// Emit a structured error envelope (OpenAI streams use a regular
+		// `data:` line carrying an `error` object, then close the stream
+		// with finish_reason "error" instead of "stop"). Clients matching
+		// on the OpenAI protocol can therefore distinguish a model error
+		// from a normal completion.
+		stream.sendError(runErr)
+		stream.send(ChatCompletionStreamDelta{}, "error")
+	} else {
+		stream.send(ChatCompletionStreamDelta{}, "stop")
 	}
-
-	stream.send(ChatCompletionStreamDelta{}, "stop")
 	stream.done()
 	return nil
 }
@@ -308,6 +314,26 @@ func (s *sseStream) send(delta ChatCompletionStreamDelta, finishReason string) {
 // done writes the OpenAI sentinel terminator that ends the stream.
 func (s *sseStream) done() {
 	_, _ = fmt.Fprint(s.w, "data: [DONE]\n\n")
+	if f, ok := s.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// sendError emits an OpenAI-style error envelope as a separate SSE event
+// alongside the chunked deltas. Real OpenAI streams use this shape when a
+// run fails mid-flight, e.g. a content filter trips: the message arrives
+// in its own `data:` line carrying an `error` object before the stream
+// terminates.
+func (s *sseStream) sendError(err error) {
+	envelope := ErrorResponse{Error: ErrorDetail{
+		Message: err.Error(),
+		Type:    "internal_error",
+	}}
+	data, marshalErr := json.Marshal(envelope)
+	if marshalErr != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(s.w, "data: %s\n\n", data)
 	if f, ok := s.w.(http.Flusher); ok {
 		f.Flush()
 	}
