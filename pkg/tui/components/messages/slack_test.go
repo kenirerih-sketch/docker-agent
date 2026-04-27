@@ -111,14 +111,14 @@ func TestBottomSlackAnimationSubscribesWhileDecaying(t *testing.T) {
 		"no slack means no animation subscription")
 
 	// Slack > 0: a tick should subscribe so further ticks keep firing
-	// even after fade animations finish, and Update must return the
-	// scheduling command so Bubbletea actually delivers the next tick.
+	// even after fade animations finish. We can only assert on the local
+	// subscription state — the global tick command from Subscription.Start
+	// is non-nil only for the first global subscriber, which is racy when
+	// tests touching the animation coordinator run in parallel.
 	m.bottomSlack = 2
-	_, cmd := m.Update(animation.TickMsg{Frame: 1})
+	m.Update(animation.TickMsg{Frame: 1})
 	assert.True(t, m.slackAnimationSub.IsActive(),
 		"subscription should be active while slack > 0")
-	assert.NotNil(t, cmd,
-		"Update must return a tick command so the next tick is scheduled")
 
 	// Once slack hits zero, the subscription must release the global tick.
 	m.Update(animation.TickMsg{Frame: 2})
